@@ -99,10 +99,32 @@ with st.sidebar:
         in (ExecutionMode.BASE_ONE_SHOT, ExecutionMode.ADAPTER_ONE_SHOT),
     )
 
+    max_new_tokens = st.slider(
+        label="Max output tokens",
+        min_value=256,
+        max_value=2048,
+        value=768,
+        step=64,
+        help=(
+            "Maximum tokens the model can generate per page. "
+            "A manuscript page is typically 400–800 tokens. "
+            "Lower values = faster generation."
+        ),
+    )
+
     load_in_4bit = st.checkbox(
         label="Load model in 4-bit (BnB)",
         value=True,
         help="Reduces VRAM usage. Recommended for consumer GPUs.",
+    )
+
+    use_compile = st.checkbox(
+        label="Compile model (torch.compile)",
+        value=False,
+        help=(
+            "Compiles the model forward pass for ~20-40% faster generation. "
+            "Adds ~2 min warm-up on first run. Best for processing many pages."
+        ),
     )
 
     use_sdpa = st.checkbox(
@@ -228,6 +250,8 @@ def _run_pipeline(
     ground_truth_file,
     verbose: bool = False,
     use_sdpa: bool = True,
+    use_compile: bool = False,
+    max_new_tokens: int = 768,
 ) -> None:
     """
     Lazy-import and execute the full pipeline. Called only when the user
@@ -301,6 +325,8 @@ def _run_pipeline(
         adapter_path=resolved_adapter_path,
         load_in_4bit=load_4bit,
         use_sdpa=use_sdpa,
+        use_compile=use_compile,
+        max_new_tokens=max_new_tokens,
         verbose=verbose,
     )
     try:
@@ -365,6 +391,8 @@ if run_button and uploaded_file is not None:
         ground_truth_file=ground_truth_file,
         verbose=verbose,
         use_sdpa=use_sdpa,
+        use_compile=use_compile,
+        max_new_tokens=max_new_tokens,
     )
 
 # ---------------------------------------------------------------------------
