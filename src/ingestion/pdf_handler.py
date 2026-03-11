@@ -52,11 +52,11 @@ class PDFHandler:
 
     def __init__(
         self,
-        output_dir : str | Path = "data/output_images",
-        dpi        : int = 300,
+        output_dir: str | Path = "data/output_images",
+        dpi: int = 300,
     ) -> None:
         self.output_dir = Path(output_dir)
-        self.dpi        = dpi
+        self.dpi = dpi
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -91,7 +91,7 @@ class PDFHandler:
         logger.info("Loading PDF: %s", pdf_path)
 
         doc_metadata = self._extract_document_metadata(pdf_path)
-        pages        = self._split_and_rasterise(pdf_path, doc_metadata)
+        pages = self._split_and_rasterise(pdf_path, doc_metadata)
 
         logger.info("Loaded %d pages from '%s'", len(pages), pdf_path.name)
         return pages
@@ -102,8 +102,12 @@ class PDFHandler:
 
     def _extract_document_metadata(self, pdf_path: Path) -> dict:
         """
-        Extract top-level PDF metadata (title, author, creation date, etc.)
-        using PyMuPDF's document info dictionary.
+        Extract top-level PDF metadata using PyMuPDF's document info dict.
+
+        Returns a dict with keys such as ``title``, ``author``,
+        ``creationDate``, plus ``source_filename`` and ``page_count``
+        added by this method.  All values are strings; empty string means
+        the field was absent in the PDF.
 
         Parameters
         ----------
@@ -113,25 +117,40 @@ class PDFHandler:
         Returns
         -------
         dict
-            Metadata dictionary; may be partially empty for scanned docs.
-
-        Notes
-        -----
-        ``fitz`` (PyMuPDF) returns an empty string for any missing field;
-        callers should treat empty strings as absent values.
+            Metadata dictionary; safe to pass to DocumentPage.metadata.
         """
-        # TODO: Implement using `import fitz; doc = fitz.open(pdf_path)`
-        #       Return `dict(doc.metadata) | {"source_filename": pdf_path.name}`
-        raise NotImplementedError("_extract_document_metadata is not yet implemented.")
+        try:
+            import fitz  # PyMuPDF
+        except ImportError as exc:
+            raise ImportError(
+                "PyMuPDF is required for PDF ingestion. "
+                "Install it with: pip install PyMuPDF"
+            ) from exc
+
+        doc = fitz.open(str(pdf_path))
+        # keys: title, author, subject, keywords, creator, producer,
+        #       creationDate, modDate  — absent fields are empty strings
+        metadata = dict(doc.metadata)
+        metadata["source_filename"] = pdf_path.name
+        metadata["page_count"] = str(doc.page_count)
+        doc.close()
+
+        populated = {k: v for k, v in metadata.items() if v}
+        logger.debug("PDF metadata populated fields: %s", list(populated.keys()))
+        return metadata
 
     def _split_and_rasterise(
         self,
-        pdf_path      : Path,
-        doc_metadata  : dict,
+        pdf_path: Path,
+        doc_metadata: dict,
     ) -> list[DocumentPage]:
         """
         Iterate over every PDF page, render it to PNG at ``self.dpi``,
-        and construct a :class:`~src.models.DocumentPage` object.
+        and construct a :class:`~src.models.DocumentPage` for each.
+
+        Pages whose PNG already exists on disk are not re-rendered
+        (simple existence check — delete the output dir to force a
+        full re-render).
 
         Parameters
         ----------
@@ -144,32 +163,64 @@ class PDFHandler:
         -------
         list[DocumentPage]
             One entry per page; ``image_path`` points to the saved PNG.
+        """
+        try:
+            import fitz  # PyMuPDF
+        except ImportError as exc:
+            raise ImportError(
+                "PyMuPDF is required. Install with: pip install PyMuPDF"
+            ) from exc
 
-        Implementation sketch
-        ---------------------
-        ```python
-        import fitz
-        doc   = fitz.open(str(pdf_path))
-        stem  = pdf_path.stem
-        pages = []
+        stem = pdf_path.stem
         page_dir = self.output_dir / stem
         page_dir.mkdir(parents=True, exist_ok=True)
 
-        for i, page in enumerate(doc):
-            mat      = fitz.Matrix(self.dpi / 72, self.dpi / 72)
-            pix      = page.get_pixmap(matrix=mat, alpha=False)
-            img_path = page_dir / f"{stem}_page_{i+1:03d}.png"
-            pix.save(str(img_path))
-            pages.append(DocumentPage(
-                page_id    = f"{stem}_page_{i+1:03d}",
-                image_path = str(img_path),
-                metadata   = {**doc_metadata, "page_number": i + 1},
-            ))
+        # PyMuPDF internal units are 72 DPI — scale up to target DPI
+        scale = self.dpi / 72.0
+        mat = fitz.Matrix(scale, scale)
+
+        doc = fitz.open(str(pdf_path))
+        pages: list[DocumentPage] = []
+
+        try:
+            for i, page in enumerate(doc):
+                page_num = i + 1
+                page_id = f"{stem}_page_{page_num:03d}"
+                img_path = page_dir / f"{page_id}.png"
+
+                if img_path.exists():
+                    logger.debug("Skipping cached page: %s", img_path.name)
+                else:
+                    pix = page.get_pixmap(matrix=mat, alpha=False)
+                    pix.save(str(img_path))
+                    logger.debug(
+                        "Rasterised page %d → %s  (%d×%d px)",
+                        page_num,
+                        img_path.name,
+                        pix.width,
+                        pix.height,
+                    )
+
+                if not self._validate_image(img_path):
+                    raise RuntimeError(f"Rasterised image invalid or empty: {img_path}")
+
+                pages.append(
+                    DocumentPage(
+                        page_id=page_id,
+                        image_path=str(img_path.resolve()),
+                        metadata={
+                            **doc_metadata,
+                            "page_number": page_num,
+                            "page_width": str(round(page.rect.width, 1)),
+                            "page_height": str(round(page.rect.height, 1)),
+                            "dpi": str(self.dpi),
+                        },
+                    )
+                )
+        finally:
+            doc.close()
+
         return pages
-        ```
-        """
-        # TODO: Replace with real implementation (see docstring sketch above).
-        raise NotImplementedError("_split_and_rasterise is not yet implemented.")
 
     def _validate_image(self, image_path: Path) -> bool:
         """
@@ -185,6 +236,12 @@ class PDFHandler:
         bool
             ``True`` if the image can be opened and has non-zero dimensions.
         """
-        # TODO: Implement using `PIL.Image.open(image_path).verify()` or
-        #       `cv2.imread` — return False on any exception.
-        raise NotImplementedError("_validate_image is not yet implemented.")
+        try:
+            from PIL import Image
+
+            with Image.open(image_path) as img:
+                w, h = img.size
+                return w > 0 and h > 0
+        except Exception as exc:
+            logger.warning("Image validation failed for '%s': %s", image_path, exc)
+            return False
