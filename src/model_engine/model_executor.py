@@ -109,7 +109,10 @@ class ModelExecutor:
         load_in_4bit: bool = True,
         device: str = "cuda",
         max_new_tokens: int | None = None,  # None = auto-calculate
+        repetition_penalty: float = 1.3,
+        no_repeat_ngram_size: int = 5,
         use_sdpa: bool = True,  # Use scaled dot-product attention for speed
+        use_compile: bool = False,  # Use torch.compile for faster inference
         verbose: bool = False,
     ) -> None:
         self.model_name = model_name
@@ -118,7 +121,10 @@ class ModelExecutor:
         self.device = device
         self.verbose = verbose
         self.use_sdpa = use_sdpa
+        self.use_compile = use_compile
         self.max_new_tokens = max_new_tokens
+        self.repetition_penalty = repetition_penalty
+        self.no_repeat_ngram_size = no_repeat_ngram_size
 
         # Set by _load_model()
         self._model: Any = None
@@ -210,6 +216,16 @@ class ModelExecutor:
             self._model = base_model
             self._adapter_loaded = False
             logger.info("Running as base model (no adapter).")
+
+        # ── Optional: torch.compile for faster inference ─────────────────
+        if self.use_compile:
+            import torch
+
+            logger.info(
+                "Compiling model with torch.compile (mode='reduce-overhead')..."
+            )
+            self._model = torch.compile(self._model, mode="reduce-overhead")
+            logger.info("Model compilation complete.")
 
     # ------------------------------------------------------------------
     # Adapter management
@@ -410,6 +426,28 @@ class ModelExecutor:
 
         return dynamic_max
 
+    def _clean_output(self, text: str) -> str:
+        """
+        Collapse repetitive [illegible] loops into a single counted placeholder.
+        Also normalises bare 'illegible' → '[illegible]' as the prompt specifies.
+        """
+        import re
+
+        text = text.strip()
+        # Normalise bare illegible → [illegible]
+        text = re.sub(
+            r"(?<!\[)\billegible\b(?!\])", "[illegible]", text, flags=re.IGNORECASE
+        )
+        # Collapse runs of 3+ [illegible] into a single counted placeholder
+        def collapse(match):
+            count = len(
+                re.findall(r"\[illegible\]", match.group(), re.IGNORECASE)
+            )
+            return f"[illegible ×{count} lines]"
+
+        text = re.sub(r"(\[illegible\]\s*){3,}", collapse, text, flags=re.IGNORECASE)
+        return text
+
     def _run_vision_inference(
         self, image_path: str, prompt: str, verbose: bool | None = None
     ) -> str:
@@ -503,6 +541,8 @@ class ModelExecutor:
                 max_new_tokens=dynamic_max_tokens,
                 eos_token_id=self._processor.tokenizer.eos_token_id,
                 pad_token_id=self._processor.tokenizer.pad_token_id,
+                repetition_penalty=self.repetition_penalty,
+                no_repeat_ngram_size=self.no_repeat_ngram_size,
                 do_sample=False,  # greedy — deterministic
                 temperature=None,
                 top_p=None,
@@ -528,7 +568,7 @@ class ModelExecutor:
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         )
-        return decoded[0].strip()
+        return self._clean_output(decoded[0])
 
     def _run_text_inference(self, prompt: str, verbose: bool | None = None) -> str:
         """
@@ -585,6 +625,8 @@ class ModelExecutor:
                 max_new_tokens=dynamic_max_tokens,
                 eos_token_id=self._processor.tokenizer.eos_token_id,
                 pad_token_id=self._processor.tokenizer.pad_token_id,
+                repetition_penalty=self.repetition_penalty,
+                no_repeat_ngram_size=self.no_repeat_ngram_size,
                 do_sample=False,
                 temperature=None,
                 top_p=None,
@@ -609,7 +651,7 @@ class ModelExecutor:
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         )
-        return decoded[0].strip()
+        return self._clean_output(decoded[0])
 
     def _assert_loaded(self, method_name: str) -> None:
         """Raise RuntimeError if the model has not been initialised yet."""
