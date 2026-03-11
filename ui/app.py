@@ -29,15 +29,29 @@ UI renders immediately even before model weights are loaded.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import streamlit as st
 
-# Ensure project root is on sys.path when launched from ui/ directory
+# ---------------------------------------------------------------------------
+# sys.path fix — must happen BEFORE any 'from src.*' import.
+#
+# Streamlit can be launched from any working directory:
+#   streamlit run ui/app.py          (cwd = project root)
+#   cd ui && streamlit run app.py    (cwd = ui/)
+#
+# __file__ is always the absolute path to THIS file (ui/app.py),
+# so .parent.parent is always the project root regardless of cwd.
+# We insert at position 0 so it takes priority over any installed packages.
+# ---------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Propagate to subprocesses (model workers, etc.)
+os.environ.setdefault("PYTHONPATH", str(ROOT))
 
 from src.models import ExecutionMode
 
@@ -72,13 +86,17 @@ with st.sidebar:
     )
     execution_mode = ExecutionMode(execution_mode_label)
 
+    _adapter_required = execution_mode in (
+        ExecutionMode.ADAPTER_ONE_SHOT,
+        ExecutionMode.ADAPTER_REACT,
+    )
     adapter_path_input = st.text_input(
-        label="LoRA Adapter Path",
-        value="models/lora_manuscript_v1",
+        label="LoRA Adapter Path"
+        + ("" if _adapter_required else " (not used in base modes)"),
+        value="" if not _adapter_required else "models/lora_manuscript_v1",
         placeholder="models/lora_manuscript_v1",
-        help="Relative or absolute path to the adapter_config.json directory.",
-        disabled=execution_mode
-        in (ExecutionMode.BASE_ONE_SHOT, ExecutionMode.BASE_REACT),
+        help="Relative or absolute path to the adapter_config.json directory. Ignored for Base_OneShot and Base_ReAct modes.",
+        disabled=not _adapter_required,
     )
 
     max_iterations = st.slider(
@@ -247,7 +265,7 @@ def _run_pipeline(
 
     # ── Step 1: Ingest PDF ───────────────────────────────────────────────
     progress_bar.progress(10, text="📄 Splitting PDF into pages…")
-    handler = PDFHandler(output_dir="data/output_images", dpi=300)
+    handler = PDFHandler(output_dir=str(ROOT / "data" / "output_images"), dpi=300)
     try:
         pages = handler.load_pdf(tmp_pdf_path)
     except NotImplementedError:
@@ -259,8 +277,20 @@ def _run_pipeline(
 
     # ── Step 2: Load model ───────────────────────────────────────────────
     progress_bar.progress(25, text="🤖 Loading VLM (this may take a minute)…")
+
+    # Only pass an adapter_path when the selected mode actually uses one.
+    # Base_OneShot and Base_ReAct must receive None — even if the text field
+    # has a value — otherwise ModelExecutor will try to load weights that
+    # may not exist and raise RuntimeError.
+    _base_modes = (ExecutionMode.BASE_ONE_SHOT, ExecutionMode.BASE_REACT)
+    resolved_adapter_path = (
+        None
+        if execution_mode in _base_modes or not adapter_path.strip()
+        else adapter_path.strip()
+    )
+
     executor = ModelExecutor(
-        adapter_path=adapter_path if adapter_path.strip() else None,
+        adapter_path=resolved_adapter_path,
         load_in_4bit=load_4bit,
     )
     try:
@@ -271,8 +301,12 @@ def _run_pipeline(
         )
         progress_bar.empty()
         return
+    except RuntimeError as exc:
+        st.error(f"Model failed to load: {exc}")
+        progress_bar.empty()
+        return
 
-    registry = PromptRegistry(prompts_dir="prompts/")
+    registry = PromptRegistry(prompts_dir=str(ROOT / "prompts"))
 
     # ── Step 3: Process each page ────────────────────────────────────────
     results = []
@@ -283,7 +317,7 @@ def _run_pipeline(
             int(25 + 70 * (idx / n_pages)),
             text=f"🔍 Processing page {idx + 1}/{n_pages}…",
         )
-        trace_logger = TraceLogger(logs_dir="logs/", page_id=page.page_id)
+        trace_logger = TraceLogger(logs_dir=str(ROOT / "logs"), page_id=page.page_id)
         orchestrator = AgenticOrchestrator(
             executor=executor,
             registry=registry,
