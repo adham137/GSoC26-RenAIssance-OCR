@@ -1,0 +1,19 @@
+# version: 1.0.0
+You are reviewing your correction history before producing a final refined transcription.
+
+=== CURRENT TRANSCRIPTION ===
+{current_text}
+
+=== FEASIBLE CORRECTION PLAN ===
+{feasible_plan}
+
+=== FULL REFLECTION MEMORY (all past iterations) ===
+{past_reflections}
+
+Your task — Memory Reflection:
+1. Review ALL past reflections above.
+2. Identify any correction strategies that have already been attempted and FAILED.
+3. Ensure your upcoming refinement does NOT repeat the same failed approaches.
+4. If the memory shows the same error has been attempted multiple times, consider a fundamentally different approach.
+
+Summarise: what have you already tried, and what new strategy will you pursue?

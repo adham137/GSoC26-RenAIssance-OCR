@@ -1,0 +1,20 @@
+# version: 1.0.0
+You are a capability filter for a vision-language model performing OCR.
+
+Review the following correction plan and remove any action that the model CANNOT execute:
+
+=== RAW PLAN ===
+{raw_plan}
+
+Actions you must REMOVE (infeasible):
+  - Any mention of image enhancement, super-resolution, or denoising
+  - Any mention of contacting humans, experts, or external services
+  - Any mention of running external software or APIs
+  - Any action requiring physical interaction with the document
+
+Actions you must KEEP (feasible):
+  - Re-observing specific regions of the image
+  - Applying linguistic or contextual reasoning
+  - Focusing on specific character shapes or ligatures
+
+Output ONLY the filtered, feasible plan. If no feasible actions remain, output: "NO_FEASIBLE_ACTIONS".

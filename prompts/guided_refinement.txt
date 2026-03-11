@@ -1,0 +1,20 @@
+# version: 1.0.0
+You are now executing a guided refinement of your manuscript transcription.
+
+=== CURRENT (IMPERFECT) TRANSCRIPTION ===
+{current_text}
+
+=== FEASIBLE CORRECTION PLAN TO EXECUTE ===
+{feasible_plan}
+
+=== REFLECTION MEMORY (what you have already tried) ===
+{past_reflections}
+
+Your task:
+1. Re-examine the manuscript image carefully, focusing on the error regions identified in the plan.
+2. Execute ONLY the feasible actions in the correction plan.
+3. Apply your full paleographic expertise to the ambiguous characters.
+4. Produce a complete, improved transcription of the entire page.
+
+Do not introduce new errors while correcting existing ones.
+Output the complete refined transcription now, with no preamble.

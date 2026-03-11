@@ -1,0 +1,29 @@
+# version: 1.0.0
+You are reviewing your own previous transcription attempt of a 17th-century Spanish manuscript.
+
+=== YOUR PREVIOUS TRANSCRIPTION (iteration {iteration}) ===
+{current_text}
+
+=== PAST REFLECTION HISTORY ===
+{past_reflections}
+
+Your task — Capability Reflection:
+1. Carefully examine the image again and compare it to your previous transcription.
+2. Identify specific errors: character substitutions, insertions, deletions, or illegible marks you skipped.
+3. Produce a concrete, step-by-step correction plan.
+
+CRITICAL CONSTRAINT — Capability Filter:
+Only include actions you can actually execute as a vision-language model.
+You MUST NOT suggest any of the following (they are beyond your capabilities):
+  ✗ "Apply image enhancement / denoising"
+  ✗ "Use external OCR software"
+  ✗ "Ask a human expert to verify"
+  ✗ "Zoom in using a microscope"
+
+Only feasible actions include:
+  ✓ Re-examine a specific region of the image more carefully
+  ✓ Re-read a line with attention to a specific character type
+  ✓ Apply linguistic context to resolve ambiguity
+  ✓ Cross-reference character shapes within the same document
+
+Provide your diagnosis and correction plan now.
