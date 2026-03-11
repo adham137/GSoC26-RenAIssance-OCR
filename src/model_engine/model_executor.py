@@ -3,7 +3,7 @@ src/model_engine/model_executor.py
 ===================================
 Model Execution & Adapter Management Module (System Design §2.3).
 
-This is the core inference engine.  It is responsible for:
+This is the core inference engine. It is responsible for:
     1. Loading the Qwen-VL base model via Hugging Face ``transformers``.
     2. Dynamically attaching / detaching LoRA adapters via ``peft``.
     3. Executing inference for a given image + prompt pair.
@@ -104,11 +104,13 @@ class ModelExecutor:
         load_in_4bit: bool = True,
         device: str = "cuda",
         max_new_tokens: int = 2048,
+        verbose: bool = False,
     ) -> None:
         self.model_name = model_name
         self.adapter_path = Path(adapter_path) if adapter_path else None
         self.load_in_4bit = load_in_4bit
         self.device = device
+        self.verbose = verbose
 
         # Set by _load_model()
         self._model: Any = None
@@ -130,27 +132,6 @@ class ModelExecutor:
         ------
         RuntimeError
             If the model or adapter weights cannot be loaded.
-
-        Implementation sketch
-        ---------------------
-        ```python
-        from transformers import AutoProcessor, BitsAndBytesConfig
-        from transformers import Qwen2_5_VLForConditionalGeneration
-        from peft import PeftModel
-
-        bnb_config = BitsAndBytesConfig(load_in_4bit=self.load_in_4bit)
-        self._processor = AutoProcessor.from_pretrained(self.model_name)
-        base = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            self.model_name,
-            quantization_config=bnb_config,
-            device_map=self.device,
-        )
-        if self.adapter_path:
-            self._model = PeftModel.from_pretrained(base, str(self.adapter_path))
-            self._adapter_loaded = True
-        else:
-            self._model = base
-        ```
         """
         logger.info(
             "Loading model '%s'  (4-bit=%s, adapter=%s)",
@@ -219,7 +200,7 @@ class ModelExecutor:
             logger.info("Running as base model (no adapter).")
 
     # ------------------------------------------------------------------
-    # Adapter management  — MUST be called explicitly by the Orchestrator
+    # Adapter management
     # ------------------------------------------------------------------
 
     def set_adapter(self) -> None:
@@ -233,16 +214,6 @@ class ModelExecutor:
         ------
         RuntimeError
             If no ``adapter_path`` was provided at construction time.
-
-        Implementation sketch
-        ---------------------
-        ```python
-        if self.adapter_path is None:
-            raise RuntimeError("No adapter_path configured.")
-        self._model.enable_adapter_layers()
-        self._adapter_loaded = True
-        logger.debug("LoRA adapter ENABLED")
-        ```
         """
         if self._model is None:
             raise RuntimeError("load_model() must be called before set_adapter().")
@@ -260,15 +231,6 @@ class ModelExecutor:
 
         Called before tasks that require general reasoning:
         ``diagnose_errors`` and ``filter_plan``.
-
-        Implementation sketch
-        ---------------------
-        ```python
-        if self._adapter_loaded:
-            self._model.disable_adapter_layers()
-            self._adapter_loaded = False
-            logger.debug("LoRA adapter DISABLED")
-        ```
         """
         if self._model is None:
             raise RuntimeError("load_model() must be called before disable_adapter().")
@@ -283,7 +245,7 @@ class ModelExecutor:
         return "ON" if self._adapter_loaded else "OFF"
 
     # ------------------------------------------------------------------
-    # Inference methods  — adapter state is managed by the Orchestrator
+    # Inference methods
     # ------------------------------------------------------------------
 
     def extract_text(
@@ -295,35 +257,6 @@ class ModelExecutor:
         Perform a single OCR pass on ``page`` using the provided ``prompt``.
 
         Adapter should be **ON** when this is called.
-
-        Parameters
-        ----------
-        page : DocumentPage
-            The manuscript page to transcribe.
-        prompt : str
-            Fully rendered extraction prompt from the PromptRegistry.
-
-        Returns
-        -------
-        str
-            Raw transcription string from the VLM.
-
-        Notes
-        -----
-        * Images are automatically resized if they exceed MAX_IMAGE_DIM.
-        * Pass the PIL image object directly to the processor.
-
-        Implementation sketch
-        ---------------------
-        ```python
-        from PIL import Image
-        image   = Image.open(page.image_path).convert("RGB")
-        inputs  = self._processor(
-            text=[prompt], images=[image], return_tensors="pt"
-        ).to(self.device)
-        outputs = self._model.generate(**inputs, max_new_tokens=1024)
-        return self._processor.decode(outputs[0], skip_special_tokens=True)
-        ```
         """
         self._assert_loaded("extract_text")
         logger.debug("extract_text called (adapter=%s)", self.adapter_state)
@@ -340,20 +273,6 @@ class ModelExecutor:
         correction plan (Capability Reflection, §3.2).
 
         Adapter should be **OFF** when this is called.
-
-        Parameters
-        ----------
-        page : DocumentPage
-            The original manuscript image for visual reference.
-        current_text : str
-            The transcription produced in the previous step.
-        reflection_prompt : str
-            Rendered capability-reflection prompt with context injected.
-
-        Returns
-        -------
-        str
-            Raw reflection / diagnosis string including the proposed plan.
         """
         self._assert_loaded("diagnose_errors")
         logger.debug("diagnose_errors called (adapter=%s)", self.adapter_state)
@@ -370,18 +289,6 @@ class ModelExecutor:
 
         Adapter should be **OFF** when this is called.
         Text-only — no image needed for filtering.
-
-        Parameters
-        ----------
-        raw_plan : str
-            The unfiltered correction plan from ``diagnose_errors``.
-        filter_prompt : str
-            Rendered capability-filter prompt with ``{raw_plan}`` injected.
-
-        Returns
-        -------
-        str
-            P_feas — the filtered, model-executable correction plan.
         """
         self._assert_loaded("filter_plan")
         logger.debug("filter_plan called (adapter=%s)", self.adapter_state)
@@ -398,20 +305,6 @@ class ModelExecutor:
         transcription (Guided Refinement, §3.3).
 
         Adapter should be **ON** when this is called.
-
-        Parameters
-        ----------
-        page : DocumentPage
-            The manuscript image — re-observed during refinement.
-        feasible_plan : str
-            P_feas from ``filter_plan``.
-        refinement_prompt : str
-            Rendered guided-refinement prompt.
-
-        Returns
-        -------
-        str
-            The improved transcription A_i.
         """
         self._assert_loaded("guided_refinement")
         logger.debug("guided_refinement called (adapter=%s)", self.adapter_state)
@@ -428,16 +321,6 @@ class ModelExecutor:
         Qwen3.5-VL's vision encoder creates ~4 tokens per 14x14 patch.
         A 2657x3728 image would create ~38k tokens which causes OOM/hanging.
         We cap the largest dimension to MAX_IMAGE_DIM (1024) to keep tokens manageable.
-
-        Parameters
-        ----------
-        image : PIL.Image.Image
-            Input image to potentially resize.
-
-        Returns
-        -------
-        PIL.Image.Image
-            Resized image if needed, otherwise the original.
         """
         from PIL import Image
 
@@ -461,18 +344,38 @@ class ModelExecutor:
             return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
         return image
 
-    def _run_vision_inference(self, image_path: str, prompt: str) -> str:
+    def _run_vision_inference(self, image_path: str, prompt: str, verbose: bool | None = None) -> str:
         """
-                Run a vision+text inference pass using the Qwen-VL chat template.
+        Run a vision+text inference pass using the Qwen-VL chat template.
 
-                Qwen2.5-VL expects the OpenAI-style message dict format.
-                The processor's ``apply_chat_template`` inserts the correct
-                ``
-        </think>
+        Parameters
+        ----------
+        image_path : str
+            Path to the input image.
+        prompt : str
+            Text prompt for the model.
+        verbose : bool, optional
+            If True, log generation progress including token count and timing.
+            If None, uses self.verbose.
 
+        Returns
+        -------
+        str
+            Generated text response.
+
+        Optimizations
+        -------------
+        * Uses early stopping via eos_token_id to prevent runaway generation
+        * Verbose mode logs token generation stats for debugging
         """
+        import time
+
         import torch
         from PIL import Image
+
+        # Use instance verbose if not overridden
+        if verbose is None:
+            verbose = self.verbose
 
         # Load and potentially resize image
         image = Image.open(image_path).convert("RGB")
@@ -514,17 +417,41 @@ class ModelExecutor:
 
         inputs = self._processor(**processor_kwargs).to(self._model.device)
 
+        if verbose:
+            logger.info(
+                "Starting generation: input_tokens=%d, max_new_tokens=%d",
+                inputs.input_ids.shape[1],
+                self.max_new_tokens,
+            )
+
+        start_time = time.time()
+
         with torch.inference_mode():
             output_ids = self._model.generate(
                 **inputs,
                 max_new_tokens=self.max_new_tokens,
+                eos_token_id=self._processor.tokenizer.eos_token_id,
+                pad_token_id=self._processor.tokenizer.pad_token_id,
                 do_sample=False,  # greedy — deterministic
                 temperature=None,
                 top_p=None,
+                return_dict_in_generate=True,
+                output_scores=False,
             )
 
-        # Decode only the newly generated tokens (slice off the prompt portion)
-        generated = output_ids[:, inputs.input_ids.shape[1] :]
+        elapsed = time.time() - start_time
+        generated = output_ids.sequences[:, inputs.input_ids.shape[1] :]
+        num_tokens = generated.shape[1]
+
+        if verbose:
+            tokens_per_sec = num_tokens / elapsed if elapsed > 0 else 0
+            logger.info(
+                "Generation complete: %d tokens in %.2fs (%.2f tokens/sec)",
+                num_tokens,
+                elapsed,
+                tokens_per_sec,
+            )
+
         decoded = self._processor.batch_decode(
             generated,
             skip_special_tokens=True,
@@ -532,14 +459,20 @@ class ModelExecutor:
         )
         return decoded[0].strip()
 
-    def _run_text_inference(self, prompt: str) -> str:
+    def _run_text_inference(self, prompt: str, verbose: bool | None = None) -> str:
         """
         Run a text-only inference pass (no image).
 
         Used for ``filter_plan`` where we only need the model to filter
         a text plan — no visual input required.
         """
+        import time
+
         import torch
+
+        # Use instance verbose if not overridden
+        if verbose is None:
+            verbose = self.verbose
 
         messages = [
             {
@@ -560,16 +493,39 @@ class ModelExecutor:
             return_tensors="pt",
         ).to(self._model.device)
 
+        if verbose:
+            logger.info(
+                "Starting text generation: input_tokens=%d, max_new_tokens=512",
+                inputs.input_ids.shape[1],
+            )
+
+        start_time = time.time()
+
         with torch.inference_mode():
             output_ids = self._model.generate(
                 **inputs,
                 max_new_tokens=512,  # plans are short
+                eos_token_id=self._processor.tokenizer.eos_token_id,
+                pad_token_id=self._processor.tokenizer.pad_token_id,
                 do_sample=False,
                 temperature=None,
                 top_p=None,
+                return_dict_in_generate=True,
             )
 
-        generated = output_ids[:, inputs.input_ids.shape[1] :]
+        elapsed = time.time() - start_time
+        generated = output_ids.sequences[:, inputs.input_ids.shape[1] :]
+        num_tokens = generated.shape[1]
+
+        if verbose:
+            tokens_per_sec = num_tokens / elapsed if elapsed > 0 else 0
+            logger.info(
+                "Text generation complete: %d tokens in %.2fs (%.2f tokens/sec)",
+                num_tokens,
+                elapsed,
+                tokens_per_sec,
+            )
+
         decoded = self._processor.batch_decode(
             generated,
             skip_special_tokens=True,

@@ -37,26 +37,17 @@ import streamlit as st
 
 # ---------------------------------------------------------------------------
 # sys.path fix — must happen BEFORE any 'from src.*' import.
-#
-# Streamlit can be launched from any working directory:
-#   streamlit run ui/app.py          (cwd = project root)
-#   cd ui && streamlit run app.py    (cwd = ui/)
-#
-# __file__ is always the absolute path to THIS file (ui/app.py),
-# so .parent.parent is always the project root regardless of cwd.
-# We insert at position 0 so it takes priority over any installed packages.
 # ---------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Propagate to subprocesses (model workers, etc.)
 os.environ.setdefault("PYTHONPATH", str(ROOT))
 
 from src.models import ExecutionMode
 
 # ---------------------------------------------------------------------------
-# Page config (must be first Streamlit call)
+# Page config
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
@@ -76,7 +67,7 @@ with st.sidebar:
     execution_mode_label = st.selectbox(
         label="Execution Mode",
         options=[m.value for m in ExecutionMode],
-        index=3,  # Default: Adapter_ReAct
+        index=3,
         help=(
             "Base_OneShot: single-pass, no adapters.\n"
             "Base_ReAct: reflection loop, no adapters.\n"
@@ -95,7 +86,6 @@ with st.sidebar:
         + ("" if _adapter_required else " (not used in base modes)"),
         value="" if not _adapter_required else "models/lora_manuscript_v1",
         placeholder="models/lora_manuscript_v1",
-        help="Relative or absolute path to the adapter_config.json directory. Ignored for Base_OneShot and Base_ReAct modes.",
         disabled=not _adapter_required,
     )
 
@@ -105,7 +95,6 @@ with st.sidebar:
         max_value=5,
         value=3,
         step=1,
-        help="Number of Capability + Memory Reflection rounds (paper default: 3).",
         disabled=execution_mode
         in (ExecutionMode.BASE_ONE_SHOT, ExecutionMode.ADAPTER_ONE_SHOT),
     )
@@ -116,18 +105,22 @@ with st.sidebar:
         help="Reduces VRAM usage. Recommended for consumer GPUs.",
     )
 
+    verbose = st.checkbox(
+        label="Verbose generation logging",
+        value=False,
+        help="Show token generation stats in the Generation Logs window.",
+    )
+
     st.markdown("---")
     st.subheader("📂 Input Document")
     uploaded_file = st.file_uploader(
         label="Upload PDF Manuscript",
         type=["pdf"],
-        help="Upload a multi-page PDF. Each page is processed independently.",
     )
 
     ground_truth_file = st.file_uploader(
         label="Upload Ground Truth (optional)",
         type=["txt"],
-        help="Plain text file for CER/WER evaluation. One line per PDF page.",
     )
 
     st.markdown("---")
@@ -150,7 +143,7 @@ st.caption(
 st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# Session state initialisation
+# Session state
 # ---------------------------------------------------------------------------
 
 if "ocr_results" not in st.session_state:
@@ -163,25 +156,12 @@ if "pipeline_done" not in st.session_state:
     st.session_state.pipeline_done = False
 
 # ---------------------------------------------------------------------------
-# Pipeline execution (triggered by button)
+# Helper functions
 # ---------------------------------------------------------------------------
 
 
 def _render_trace_step(trace) -> None:
-    """
-    Render a single :class:`~src.models.AgenticTrace` entry inside the
-    Streamlit expander.
-
-    Formatting rules (must match for correct UI rendering):
-    --------------------------------------------------------
-    * INIT    → blue info box
-    * REFLECT → orange warning box  (adapter=OFF shown in red badge)
-    * FILTER  → grey info box
-    * REFINE  → green success box   (adapter=ON shown in green badge)
-    * TERMINATE → red error box
-
-    The adapter state badge uses HTML so it is visually distinct.
-    """
+    """Render a single AgenticTrace entry inside the Streamlit expander."""
     STEP_CONFIG = {
         "INIT": ("🔍", st.info, "blue"),
         "REFLECT": ("🪞", st.warning, "orange"),
@@ -230,7 +210,7 @@ def _render_trace_step(trace) -> None:
                         f"**M[{i}]:** {mem_entry[:300]}{'…' if len(mem_entry) > 300 else ''}"
                     )
 
-        st.markdown("")  # spacer
+        st.markdown("")
 
 
 def _run_pipeline(
@@ -240,15 +220,15 @@ def _run_pipeline(
     max_iters: int,
     load_4bit: bool,
     ground_truth_file,
+    verbose: bool = False,
 ) -> None:
     """
-    Lazy-import and execute the full pipeline.  Called only when the user
+    Lazy-import and execute the full pipeline. Called only when the user
     clicks "Run Pipeline."
-
-    Parameters are passed explicitly rather than read from session_state so
-    this function can be unit-tested in isolation.
     """
+    import logging
     import tempfile
+    from io import StringIO
 
     from src.ingestion.pdf_handler import PDFHandler
     from src.logger.trace_logger import TraceLogger
@@ -256,7 +236,32 @@ def _run_pipeline(
     from src.orchestrator.agentic_orchestrator import AgenticOrchestrator
     from src.prompt_manager.prompt_registry import PromptRegistry
 
-    # ── Save uploaded PDF to a temp file ────────────────────────────────
+    # ── Create log window for verbose output ─────────────────────────────
+    log_container = st.empty()
+    log_output = StringIO()
+
+    class StreamlitLogHandler(logging.Handler):
+        """Custom logging handler that writes to Streamlit UI."""
+        def emit(self, record):
+            msg = self.format(record)
+            log_output.write(msg + "\n")
+            with log_container:
+                with st.expander("📋 Generation Logs", expanded=True):
+                    st.code(
+                        log_output.getvalue() or "Waiting for generation...",
+                        language="log",
+                        line_numbers=True,
+                    )
+
+    # Set up handler for model_executor logger
+    if verbose:
+        log_handler = StreamlitLogHandler()
+        log_handler.setFormatter(logging.Formatter("%(message)s"))
+        model_logger = logging.getLogger("src.model_engine.model_executor")
+        model_logger.addHandler(log_handler)
+        model_logger.setLevel(logging.INFO)
+
+    # ── Save uploaded PDF to a temp file ─────────────────────────────────
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(uploaded_file.read())
         tmp_pdf_path = tmp.name
@@ -278,10 +283,6 @@ def _run_pipeline(
     # ── Step 2: Load model ───────────────────────────────────────────────
     progress_bar.progress(25, text="🤖 Loading VLM (this may take a minute)…")
 
-    # Only pass an adapter_path when the selected mode actually uses one.
-    # Base_OneShot and Base_ReAct must receive None — even if the text field
-    # has a value — otherwise ModelExecutor will try to load weights that
-    # may not exist and raise RuntimeError.
     _base_modes = (ExecutionMode.BASE_ONE_SHOT, ExecutionMode.BASE_REACT)
     resolved_adapter_path = (
         None
@@ -292,12 +293,13 @@ def _run_pipeline(
     executor = ModelExecutor(
         adapter_path=resolved_adapter_path,
         load_in_4bit=load_4bit,
+        verbose=verbose,
     )
     try:
         executor.load_model()
     except NotImplementedError:
         st.error(
-            "ModelExecutor.load_model() is not yet implemented. See `src/model_engine/model_executor.py`."
+            "ModelExecutor.load_model() is not yet implemented."
         )
         progress_bar.empty()
         return
@@ -331,11 +333,19 @@ def _run_pipeline(
     progress_bar.progress(100, text="✅ Pipeline complete!")
     progress_bar.empty()
 
+    # Clean up log handler
+    if verbose:
+        model_logger.removeHandler(log_handler)
+
     st.session_state.ocr_results = results
     st.session_state.pipeline_done = True
     st.session_state.current_page = 0
     st.rerun()
 
+
+# ---------------------------------------------------------------------------
+# Trigger pipeline
+# ---------------------------------------------------------------------------
 
 if run_button and uploaded_file is not None:
     _run_pipeline(
@@ -345,6 +355,7 @@ if run_button and uploaded_file is not None:
         max_iters=max_iterations,
         load_4bit=load_in_4bit,
         ground_truth_file=ground_truth_file,
+        verbose=verbose,
     )
 
 # ---------------------------------------------------------------------------
@@ -352,7 +363,6 @@ if run_button and uploaded_file is not None:
 # ---------------------------------------------------------------------------
 
 if not st.session_state.pipeline_done or not st.session_state.ocr_results:
-    # ── Empty state ──────────────────────────────────────────────────────
     st.info(
         "👈 Upload a PDF and click **Run Pipeline** to begin.\n\n"
         "This framework implements the **OCR-Agent** self-correction loop:\n"
@@ -361,7 +371,7 @@ if not st.session_state.pipeline_done or not st.session_state.ocr_results:
     )
     st.stop()
 
-# ── Page navigator ───────────────────────────────────────────────────────────
+# ── Page navigator ───────────────────────────────────────────────────────
 results = st.session_state.ocr_results
 n_pages = len(results)
 current_i = st.session_state.current_page
@@ -385,7 +395,7 @@ if n_pages > 1:
 
 result = results[st.session_state.current_page]
 
-# ── Main two-column layout ───────────────────────────────────────────────────
+# ── Main two-column layout ───────────────────────────────────────────────
 col_image, col_text = st.columns([1, 1], gap="large")
 
 with col_image:
@@ -393,7 +403,6 @@ with col_image:
     if Path(result.page_id).exists():
         st.image(result.page_id, use_column_width=True)
     else:
-        # Try to reconstruct image_path from page_id convention
         candidate = Path("data/output_images") / f"{result.page_id}.png"
         if candidate.exists():
             st.image(str(candidate), use_column_width=True)
@@ -422,14 +431,13 @@ with col_text:
             mime="text/plain",
         )
 
-# ── Agentic Trace expander ───────────────────────────────────────────────────
+# ── Agentic Trace expander ───────────────────────────────────────────────
 st.markdown("---")
 
 with st.expander("🧠 Agentic Trace / Logs", expanded=False):
     if not result.agentic_trace:
         st.info("No trace available for one-shot modes.")
     else:
-        # Summary banner
         n_reflect = len([t for t in result.agentic_trace if t.step_type == "REFLECT"])
         n_refine = len([t for t in result.agentic_trace if t.step_type == "REFINE"])
         terminated = any(t.step_type == "TERMINATE" for t in result.agentic_trace)
