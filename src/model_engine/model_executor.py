@@ -97,13 +97,19 @@ class ModelExecutor:
     # Maximum image dimension to prevent excessive visual tokens
     MAX_IMAGE_DIM = 1024
 
+    # Heuristic for transcription output length: output_tokens ≈ input_chars × multiplier
+    TRANSCRIPTION_HEURISTIC_MULTIPLIER = (
+        1.2  # More aggressive for full-page transcriptions
+    )
+
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL,
         adapter_path: str | Path | None = None,
         load_in_4bit: bool = True,
         device: str = "cuda",
-        max_new_tokens: int = 2048,
+        max_new_tokens: int | None = None,  # None = auto-calculate
+        use_sdpa: bool = True,  # Use scaled dot-product attention for speed
         verbose: bool = False,
     ) -> None:
         self.model_name = model_name
@@ -111,12 +117,13 @@ class ModelExecutor:
         self.load_in_4bit = load_in_4bit
         self.device = device
         self.verbose = verbose
+        self.use_sdpa = use_sdpa
+        self.max_new_tokens = max_new_tokens
 
         # Set by _load_model()
         self._model: Any = None
         self._processor: Any = None
         self._adapter_loaded: bool = False
-        self.max_new_tokens = max_new_tokens
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -168,12 +175,17 @@ class ModelExecutor:
             )
 
         # ── Base model ────────────────────────────────────────────────────
+        # Determine attention implementation
+        attn_impl = "sdpa" if self.use_sdpa else "eager"
+        logger.info("Using %s attention implementation", attn_impl.upper())
+
         base_model = AutoModelForImageTextToText.from_pretrained(
             self.model_name,
             quantization_config=bnb_config,
             device_map=self.device,
             trust_remote_code=True,
             torch_dtype=torch.float16 if not self.load_in_4bit else None,
+            attn_implementation=attn_impl,
         )
         logger.debug("Base model loaded.")
 
@@ -344,7 +356,63 @@ class ModelExecutor:
             return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
         return image
 
-    def _run_vision_inference(self, image_path: str, prompt: str, verbose: bool | None = None) -> str:
+    def _calculate_dynamic_max_tokens(
+        self, prompt: str, image: "Image.Image" = None
+    ) -> int:
+        """
+        Calculate dynamic max_new_tokens based on input characteristics.
+
+        For transcription tasks, output length depends primarily on the amount
+        of text in the image, which correlates with image area (more pixels = more text).
+
+        Heuristic:
+        - Base: calculated from image area (pixels correlate with text content)
+        - Prompt length factor: longer prompts may indicate more detailed output needed
+        - Minimum: 256 tokens (for sparse images)
+        - Maximum: 1500 tokens (cap for dense pages)
+
+        Parameters
+        ----------
+        prompt : str
+            The text prompt.
+        image : PIL.Image.Image, optional
+            The input image (used to estimate text density).
+
+        Returns
+        -------
+        int
+            Calculated max_new_tokens value.
+        """
+        # Primary factor: image area (bigger images typically have more text)
+        # Resized manuscript at 728x1022 ≈ 744k pixels typically needs ~400-600 tokens
+        if image is not None:
+            image_area = image.width * image.height
+            # Scale: 500k pixels -> ~400 tokens, 1M pixels -> ~800 tokens
+            estimated_tokens = int(image_area / 1200)  # ~600 tokens for 728x1022
+        else:
+            estimated_tokens = 256
+
+        # Secondary factor: prompt length (longer prompts may need more output)
+        prompt_factor = max(
+            1.0, len(prompt) / 50
+        )  # 1.0 for short, 2.0+ for long prompts
+        estimated_tokens = int(estimated_tokens * prompt_factor)
+
+        # Apply bounds
+        min_tokens = 256
+        max_tokens = 1500
+
+        dynamic_max = max(min_tokens, min(max_tokens, estimated_tokens))
+
+        # If user specified a max, don't exceed it
+        if self.max_new_tokens is not None:
+            dynamic_max = min(dynamic_max, self.max_new_tokens)
+
+        return dynamic_max
+
+    def _run_vision_inference(
+        self, image_path: str, prompt: str, verbose: bool | None = None
+    ) -> str:
         """
         Run a vision+text inference pass using the Qwen-VL chat template.
 
@@ -417,11 +485,14 @@ class ModelExecutor:
 
         inputs = self._processor(**processor_kwargs).to(self._model.device)
 
+        # Calculate dynamic max_new_tokens if not explicitly set
+        dynamic_max_tokens = self._calculate_dynamic_max_tokens(prompt, image)
+
         if verbose:
             logger.info(
-                "Starting generation: input_tokens=%d, max_new_tokens=%d",
+                "Starting generation: input_tokens=%d, max_new_tokens=%d (dynamic)",
                 inputs.input_ids.shape[1],
-                self.max_new_tokens,
+                dynamic_max_tokens,
             )
 
         start_time = time.time()
@@ -429,7 +500,7 @@ class ModelExecutor:
         with torch.inference_mode():
             output_ids = self._model.generate(
                 **inputs,
-                max_new_tokens=self.max_new_tokens,
+                max_new_tokens=dynamic_max_tokens,
                 eos_token_id=self._processor.tokenizer.eos_token_id,
                 pad_token_id=self._processor.tokenizer.pad_token_id,
                 do_sample=False,  # greedy — deterministic
@@ -493,10 +564,17 @@ class ModelExecutor:
             return_tensors="pt",
         ).to(self._model.device)
 
+        # Calculate dynamic max_new_tokens (text-only tasks are usually shorter)
+        # For filtering/planning tasks, use a smaller heuristic
+        dynamic_max_tokens = max(128, min(512, int(len(prompt) * 0.3)))
+        if self.max_new_tokens is not None:
+            dynamic_max_tokens = min(dynamic_max_tokens, self.max_new_tokens)
+
         if verbose:
             logger.info(
-                "Starting text generation: input_tokens=%d, max_new_tokens=512",
+                "Starting text generation: input_tokens=%d, max_new_tokens=%d (dynamic)",
                 inputs.input_ids.shape[1],
+                dynamic_max_tokens,
             )
 
         start_time = time.time()
@@ -504,7 +582,7 @@ class ModelExecutor:
         with torch.inference_mode():
             output_ids = self._model.generate(
                 **inputs,
-                max_new_tokens=512,  # plans are short
+                max_new_tokens=dynamic_max_tokens,
                 eos_token_id=self._processor.tokenizer.eos_token_id,
                 pad_token_id=self._processor.tokenizer.pad_token_id,
                 do_sample=False,

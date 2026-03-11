@@ -105,6 +105,12 @@ with st.sidebar:
         help="Reduces VRAM usage. Recommended for consumer GPUs.",
     )
 
+    use_sdpa = st.checkbox(
+        label="Use SDPA attention (faster)",
+        value=True,
+        help="Scaled Dot-Product Attention for faster inference.",
+    )
+
     verbose = st.checkbox(
         label="Verbose generation logging",
         value=False,
@@ -221,6 +227,7 @@ def _run_pipeline(
     load_4bit: bool,
     ground_truth_file,
     verbose: bool = False,
+    use_sdpa: bool = True,
 ) -> None:
     """
     Lazy-import and execute the full pipeline. Called only when the user
@@ -293,6 +300,7 @@ def _run_pipeline(
     executor = ModelExecutor(
         adapter_path=resolved_adapter_path,
         load_in_4bit=load_4bit,
+        use_sdpa=use_sdpa,
         verbose=verbose,
     )
     try:
@@ -356,6 +364,7 @@ if run_button and uploaded_file is not None:
         load_4bit=load_in_4bit,
         ground_truth_file=ground_truth_file,
         verbose=verbose,
+        use_sdpa=use_sdpa,
     )
 
 # ---------------------------------------------------------------------------
