@@ -1,0 +1,18 @@
+# Python / Environment
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# ML Weights & Data
+data/
+*.pt
+*.pth
+*.safetensors
+lora_adapters/
+logs/
+
+# OS Files
+.DS_Store
+Thumbs.db
+EOF
