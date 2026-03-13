@@ -91,6 +91,9 @@ def mock_executor() -> MagicMock:
     executor.filter_plan.return_value        = "Plan: focus on descenders."  # feasible subset
     executor.guided_refinement.return_value  = "Refined transcription text."
 
+    # _parse_transcription stub — returns input unchanged for testing
+    executor._parse_transcription.side_effect = lambda x: x if isinstance(x, str) else str(x)
+
     return executor
 
 

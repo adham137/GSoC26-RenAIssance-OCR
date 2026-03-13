@@ -426,11 +426,67 @@ class ModelExecutor:
 
         return dynamic_max
 
+    def _parse_transcription(self, raw_response: str) -> str:
+        """
+        Extract the clean transcription from a raw VLM response.
+
+        Handles three common response patterns:
+        1. <think>...</think> tags followed by the transcription
+        2. Markdown separator (***  or ---) followed by the transcription
+        3. Introductory prose paragraph followed by the transcription
+           (detected by a blank line or line starting with an uppercase word)
+
+        Parameters
+        ----------
+        raw_response : str
+            The full raw output from the model.
+
+        Returns
+        -------
+        str
+            The extracted transcription text, stripped of all preamble.
+        """
+        import re
+
+        text = raw_response.strip()
+
+        # Pattern 1 — explicit </think> tag (Qwen3 thinking models)
+        think_match = re.search(r"</think>\s*(.*)", text, re.DOTALL | re.IGNORECASE)
+        if think_match:
+            return think_match.group(1).strip()
+
+        # Pattern 2 — markdown horizontal rule separator (*** or --- or ___)
+        # Everything after the LAST separator is the transcription
+        separator_match = re.split(r"\n\s*(\*{3,}|_{3,}|-{3,})\s*\n", text)
+        if len(separator_match) > 1:
+            return separator_match[-1].strip()
+
+        # Pattern 3 — skip lines that look like introductory prose
+        # Heuristic: prose lines tend to be long sentences ending in punctuation.
+        # Transcription lines tend to be short fragments or ALL CAPS.
+        lines = text.splitlines()
+        transcription_start = 0
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # A line looks like prose if it's a complete sentence (ends in . or ,)
+            # and is longer than 60 chars — skip it
+            is_prose = len(stripped) > 60 and stripped[-1] in ".,"
+            if not is_prose:
+                transcription_start = i
+                break
+
+        return "\n".join(lines[transcription_start:]).strip()
+
     def _clean_output(self, text: str) -> str:
         """
         Collapse repetitive [illegible] loops into a single counted placeholder.
         Also normalises bare 'illegible' → '[illegible]' as the prompt specifies.
         """
+        # First strip any preamble/thinking
+        text = self._parse_transcription(text)
+
         import re
 
         text = text.strip()

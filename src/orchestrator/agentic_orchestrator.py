@@ -165,7 +165,8 @@ class AgenticOrchestrator:
             self.executor.set_adapter()
 
         prompt = self.registry.render("initial_extraction")
-        text   = self.executor.extract_text(page, prompt)
+        text = self.executor.extract_text(page, prompt)
+        text = self.executor._parse_transcription(text)
 
         trace_entry = AgenticTrace(
             iteration     = 0,
@@ -331,6 +332,9 @@ class AgenticOrchestrator:
             if not feasible_plan.strip():
                 logger.info("Empty feasible plan at iteration %d — terminating loop.", i)
                 break
+
+        # Parse final transcription to remove any preamble/thinking
+        current_text = self.executor._parse_transcription(current_text)
 
         return OCRResult(
             page_id        = page.page_id,

@@ -203,3 +203,19 @@ class EvaluationReport(BaseModel):
     wer_score           : float
     frequent_errors     : dict[str, dict[str, int]] = Field(default_factory=dict)
     error_heatmap_path  : str | None                = None
+
+
+class ParsedTranscription(BaseModel):
+    """
+    Structured output parsed from the raw VLM response.
+
+    The model's response may contain a reasoning preamble, markdown
+    formatting, or thinking tags before the actual transcription.
+    This model isolates the clean transcription text only.
+    """
+    transcription: str = Field(
+        description=(
+            "The clean manuscript transcription only. "
+            "No preamble, no explanations, no markdown, no thinking tags."
+        )
+    )
