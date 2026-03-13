@@ -30,6 +30,7 @@ opencv-python-headless>=4.9.0
 
 # ── Evaluation ───────────────────────────────────────────────────────────────
 jiwer>=3.0.4                  # CER / WER calculation
+diff-match-patch>=20230426    # Semantic diff generation
 python-Levenshtein>=0.25.1    # Edit distance for confusion matrix
 
 # ── Data / Typing ────────────────────────────────────────────────────────────
