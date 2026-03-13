@@ -178,6 +178,8 @@ if "ocr_results" not in st.session_state:
     st.session_state.ocr_results = []
 if "eval_reports" not in st.session_state:
     st.session_state.eval_reports = []
+if "gt_lines" not in st.session_state:
+    st.session_state.gt_lines = []
 if "current_page" not in st.session_state:
     st.session_state.current_page = 0
 if "pipeline_done" not in st.session_state:
@@ -261,11 +263,20 @@ def _run_pipeline(
     import tempfile
     from io import StringIO
 
+    from src.evaluation.evaluator import Evaluator
     from src.ingestion.pdf_handler import PDFHandler
     from src.logger.trace_logger import TraceLogger
     from src.model_engine.model_executor import ModelExecutor
     from src.orchestrator.agentic_orchestrator import AgenticOrchestrator
     from src.prompt_manager.prompt_registry import PromptRegistry
+
+    # ── Parse ground truth text ─────────────────────────────────────────
+    # Treat the entire file content as the GT for the first page
+    # (1-to-1 mapping: one GT file = one document transcription)
+    gt_lines: list[str] = []
+    if ground_truth_file is not None:
+        raw = ground_truth_file.read().decode("utf-8")
+        gt_lines = [raw.strip()]
 
     # ── Create log window for verbose output ─────────────────────────────
     log_container = st.empty()
@@ -344,8 +355,12 @@ def _run_pipeline(
 
     registry = PromptRegistry(prompts_dir=str(ROOT / "prompts"))
 
+    # ── Instantiate evaluator ────────────────────────────────────────────
+    evaluator = Evaluator(output_dir=str(ROOT / "data" / "output_images"))
+
     # ── Step 3: Process each page ────────────────────────────────────────
     results = []
+    eval_reports = []
     n_pages = len(pages)
 
     for idx, page in enumerate(pages):
@@ -362,7 +377,18 @@ def _run_pipeline(
             execution_mode=execution_mode,
         )
         result = orchestrator.run(page)
+
+        # Run evaluation if GT is available for this page
+        eval_report = None
+        if idx < len(gt_lines):
+            eval_report = evaluator.evaluate(
+                page_id=page.page_id,
+                ocr_text=result.raw_text,
+                gt_text=gt_lines[idx],
+                image_path=page.image_path,
+            )
         results.append(result)
+        eval_reports.append(eval_report)
 
     progress_bar.progress(100, text="✅ Pipeline complete!")
     progress_bar.empty()
@@ -372,6 +398,8 @@ def _run_pipeline(
         model_logger.removeHandler(log_handler)
 
     st.session_state.ocr_results = results
+    st.session_state.eval_reports = eval_reports
+    st.session_state.gt_lines = gt_lines
     st.session_state.pipeline_done = True
     st.session_state.current_page = 0
     st.rerun()
@@ -413,6 +441,10 @@ results = st.session_state.ocr_results
 n_pages = len(results)
 current_i = st.session_state.current_page
 
+# Retrieve eval report for current page
+eval_reports = st.session_state.eval_reports
+eval_report = eval_reports[current_i] if current_i < len(eval_reports) else None
+
 if n_pages > 1:
     col_prev, col_counter, col_next = st.columns([1, 3, 1])
     with col_prev:
@@ -437,14 +469,23 @@ col_image, col_text = st.columns([1, 1], gap="large")
 
 with col_image:
     st.subheader("🖼️ Manuscript Image")
-    if Path(result.page_id).exists():
-        st.image(result.page_id, use_column_width=True)
+    if result.image_path and Path(result.image_path).exists():
+        st.image(result.image_path, use_column_width=True)
     else:
+        # Fallback: try to reconstruct path from page_id
         candidate = Path("data/output_images") / f"{result.page_id}.png"
         if candidate.exists():
             st.image(str(candidate), use_column_width=True)
         else:
             st.warning(f"Image not found for page: `{result.page_id}`")
+
+    # Note: Heatmap disabled — requires real word bounding boxes from OCR
+    # if eval_report is not None and eval_report.error_heatmap_path:
+    #     heatmap_path = Path(eval_report.error_heatmap_path)
+    #     if heatmap_path.exists():
+    #         st.markdown("#### 🔥 Error Heatmap")
+    #         st.caption("Red highlights = words predicted incorrectly vs ground truth")
+    #         st.image(str(heatmap_path), use_column_width=True)
 
     st.caption(
         f"**Mode:** `{result.execution_mode.value}` | "
@@ -467,6 +508,79 @@ with col_text:
             file_name=f"{result.page_id}_transcription.txt",
             mime="text/plain",
         )
+
+    # Display evaluation metrics if available
+    if eval_report is not None:
+        st.markdown("#### 📊 Evaluation Metrics")
+        m1, m2 = st.columns(2)
+        m1.metric(
+            "Character Error Rate (CER)",
+            f"{eval_report.cer_score:.2f}%",
+            help="CER = (Substitutions + Deletions + Insertions) / Reference Length × 100. Lower is better (0% = perfect match)."
+        )
+        m2.metric(
+            "Word Error Rate (WER)",
+            f"{eval_report.wer_score:.2f}%",
+            help="WER = (Substitutions + Deletions + Insertions) / Reference Word Count × 100. Lower is better (0% = perfect match)."
+        )
+        
+        # Display character-level diff visualization
+        if eval_report.char_diff_html:
+            st.markdown("#### 🔍 Character-Level Comparison")
+            st.caption(
+                "Red strikethrough = missing from OCR (in ground truth) | Green = extra in OCR (hallucination)"
+            )
+
+            # CSS styling for the semantic diff display
+            st.markdown("""
+                <style>
+                .semantic-diff {
+                    font-family: 'Courier New', monospace;
+                    font-size: 14px;
+                    line-height: 2;
+                    background: #f8f9fa;
+                    padding: 15px;
+                    border-radius: 5px;
+                    border: 1px solid #dee2e6;
+                    white-space: pre-wrap;
+                    word-wrap: break-word;
+                }
+                .semantic-diff .deletion {
+                    background-color: #f8d7da;
+                    color: #721c24;
+                    text-decoration: line-through;
+                    padding: 1px 3px;
+                    border-radius: 2px;
+                }
+                .semantic-diff .insertion {
+                    background-color: #d4edda;
+                    color: #155724;
+                    text-decoration: none;
+                    padding: 1px 3px;
+                    border-radius: 2px;
+                }
+                </style>
+            """, unsafe_allow_html=True)
+
+            # Display the semantic diff HTML
+            st.markdown(
+                f'<div class="semantic-diff">{eval_report.char_diff_html}</div>',
+                unsafe_allow_html=True
+            )
+        
+        # Display character confusion matrix
+        if eval_report.frequent_errors:
+            st.markdown("#### 🔤 Character Substitution Patterns")
+            st.caption("Shows systematic errors (e.g., long-s → f in historical manuscripts)")
+            
+            error_rows = []
+            for gt_char, predictions in eval_report.frequent_errors.items():
+                for pred_char, count in predictions.items():
+                    display_gt = '·space·' if gt_char == ' ' else gt_char
+                    display_pred = '·space·' if pred_char == ' ' else pred_char
+                    error_rows.append(f"**{display_gt}** → **{display_pred}** : {count} times")
+            
+            st.markdown("\n".join(error_rows[:15]))  # Show top 15 errors
 
 # ── Agentic Trace expander ───────────────────────────────────────────────
 st.markdown("---")

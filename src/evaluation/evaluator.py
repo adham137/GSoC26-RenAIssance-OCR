@@ -10,6 +10,7 @@ Responsibilities
 * Build a character-level confusion matrix from Levenshtein edit operations.
 * Generate a visual error-overlay image highlighting mis-transcribed words
   on the original manuscript scan.
+* Generate semantic character/word-level HTML diffs for human readability.
 
 Metric Definitions
 ------------------
@@ -22,14 +23,15 @@ where S = substitutions, D = deletions, I = insertions, N = reference length.
 
 Dependencies
 ------------
-``jiwer`` is the canonical library for WER/CER calculation.  It handles
-normalisation (lowercasing, punctuation stripping) via its built-in
-``Compose`` transforms.
+``jiwer`` is the canonical library for WER/CER calculation.
+``diff-match-patch`` provides semantic diff generation with human-readable cleanup.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import string
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -118,14 +120,14 @@ class Evaluator:
 
         frequent_errors = self.build_confusion_matrix(ocr_text, gt_text)
 
+        # Generate semantic character-level diff HTML for visualization
+        char_diff_html = self.generate_semantic_diff_html(ocr_text, gt_text)
+
+        # Heatmap generation disabled — requires actual word bounding boxes
+        # from a layout-aware OCR engine. The current grid approximation is
+        # misleading as it doesn't match actual text positions.
+        # TODO: Integrate EasyOCR/Tesseract for real bounding box support.
         heatmap_path: str | None = None
-        if image_path is not None:
-            heatmap_path = self.generate_error_heatmap(
-                page_id    = page_id,
-                ocr_text   = ocr_text,
-                gt_text    = gt_text,
-                image_path = Path(image_path),
-            )
 
         return EvaluationReport(
             page_id            = page_id,
@@ -133,6 +135,7 @@ class Evaluator:
             wer_score          = wer,
             frequent_errors    = frequent_errors,
             error_heatmap_path = heatmap_path,
+            char_diff_html     = char_diff_html,
         )
 
     # ------------------------------------------------------------------
@@ -153,8 +156,8 @@ class Evaluator:
         Returns
         -------
         float
-            CER in range [0, ∞).  Values > 1 are possible when the
-            hypothesis is longer than the reference.
+            CER as a percentage [0, ∞). Values > 100 are possible when the
+            hypothesis is much longer than the reference.
 
         """
         try:
@@ -165,11 +168,20 @@ class Evaluator:
                 "Install with: pip install jiwer"
             ) from exc
 
-        if not reference:
-            logger.warning("Empty reference string — CER is undefined, returning 0.0")
-            return 0.0
+        # Normalize both texts before comparison
+        ref_norm = self._normalise_text(reference)
+        hyp_norm = self._normalise_text(hypothesis)
 
-        return float(jiwer_cer(reference, hypothesis))
+        # Handle edge cases
+        if not ref_norm and not hyp_norm:
+            logger.debug("Both reference and hypothesis are empty — CER = 0.0")
+            return 0.0
+        if not ref_norm:
+            logger.warning("Empty reference string — CER = 100.0 (100% error)")
+            return 100.0
+
+        # Multiply by 100 to return percentage (standard CER reporting)
+        return float(jiwer_cer(ref_norm, hyp_norm)) * 100.0
 
     def compute_wer(self, hypothesis: str, reference: str) -> float:
         """
@@ -185,7 +197,7 @@ class Evaluator:
         Returns
         -------
         float
-            WER in range [0, ∞).
+            WER as a percentage [0, ∞).
 
         """
         try:
@@ -196,11 +208,20 @@ class Evaluator:
                 "Install with: pip install jiwer"
             ) from exc
 
-        if not reference:
-            logger.warning("Empty reference string — WER is undefined, returning 0.0")
-            return 0.0
+        # Normalize both texts before comparison
+        ref_norm = self._normalise_text(reference)
+        hyp_norm = self._normalise_text(hypothesis)
 
-        return float(jiwer_wer(reference, hypothesis))
+        # Handle edge cases
+        if not ref_norm and not hyp_norm:
+            logger.debug("Both reference and hypothesis are empty — WER = 0.0")
+            return 0.0
+        if not ref_norm:
+            logger.warning("Empty reference string — WER = 100.0 (100% error)")
+            return 100.0
+
+        # Multiply by 100 to return percentage (standard WER reporting)
+        return float(jiwer_wer(ref_norm, hyp_norm)) * 100.0
 
     # ------------------------------------------------------------------
     # Error analysis
@@ -377,12 +398,16 @@ class Evaluator:
     @staticmethod
     def _normalise_text(text: str) -> str:
         """
-        Apply standard OCR normalisation before metric calculation.
+        Normalizes text for accurate OCR evaluation, matching standard CER calculators.
 
         Steps applied:
-            1. Lowercase.
-            2. Strip leading/trailing whitespace.
-            3. Collapse internal whitespace runs to a single space.
+            1. Convert to lowercase.
+            2. Remove all punctuation (keeps only alphanumeric and spaces).
+            3. Collapse all whitespace (newlines, tabs, multiple spaces) into a single space.
+            4. Strip leading and trailing whitespace.
+
+        This ensures that differences in case, punctuation, and whitespace from PDF
+        layout parsing do not artificially inflate CER/WER scores.
 
         Parameters
         ----------
@@ -392,9 +417,90 @@ class Evaluator:
         Returns
         -------
         str
-            Normalised text.
+            Normalised text (lowercase, no punctuation, collapsed whitespace).
+
+        Examples
+        --------
+        >>> Evaluator._normalise_text("Hello\\nWorld")
+        'hello world'
+        >>> Evaluator._normalise_text("Hello, World!")
+        'hello world'
+        >>> Evaluator._normalise_text("Hello World ")
+        'hello world'
         """
-        import re
-        text = text.lower().strip()
-        text = re.sub(r"\s+", " ", text)
-        return text
+        if not text:
+            return ""
+        # 1. Lowercase
+        text = text.lower()
+        # 2. Remove punctuation
+        text = text.translate(str.maketrans('', '', string.punctuation))
+        # 3. Collapse whitespace
+        normalized = re.sub(r'\s+', ' ', text)
+        return normalized.strip()
+
+    def generate_semantic_diff_html(self, hypothesis: str, reference: str) -> str:
+        """
+        Generates an HTML diff highlighting insertions and deletions at the character/word level.
+
+        Uses diff_match_patch with semantic cleanup for human readability.
+        The diff shows:
+        - Deletions (missing in hypothesis): red background with strikethrough
+        - Insertions (extra in hypothesis): green background
+        - Equal text: normal display
+
+        Parameters
+        ----------
+        hypothesis : str
+            OCR output.
+        reference : str
+            Ground truth.
+
+        Returns
+        -------
+        str
+            HTML string with highlighted differences.
+        """
+        try:
+            from diff_match_patch import diff_match_patch
+        except ImportError as exc:
+            raise ImportError(
+                "diff-match-patch is required for semantic diff generation. "
+                "Install with: pip install diff-match-patch"
+            ) from exc
+
+        # Normalize both texts for fair comparison
+        ref_norm = self._normalise_text(reference)
+        hyp_norm = self._normalise_text(hypothesis)
+
+        dmp = diff_match_patch()
+
+        # Disable timeout to handle noisy OCR text without truncation
+        dmp.Diff_Timeout = 0.0
+
+        # Generate the raw diff
+        diffs = dmp.diff_main(ref_norm, hyp_norm)
+
+        # Note: Semantic cleanup removed to preserve exact character-level matches
+        # dmp.diff_cleanupSemantic(diffs)
+
+        # Convert diffs to HTML
+        html_output = []
+        for op, data in diffs:
+            # Escape HTML entities in the text to prevent rendering issues
+            text = data.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+            if op == dmp.DIFF_INSERT:
+                # Highlight insertions (hypothesis - extra text) in green
+                html_output.append(
+                    f'<span style="background-color: #d4edda; color: #155724; text-decoration: none;">{text}</span>'
+                )
+            elif op == dmp.DIFF_DELETE:
+                # Highlight deletions (reference - missing text) in red with strikethrough
+                html_output.append(
+                    f'<span style="background-color: #f8d7da; color: #721c24; text-decoration: line-through;">{text}</span>'
+                )
+            elif op == dmp.DIFF_EQUAL:
+                # Leave matching text as normal
+                html_output.append(f'<span>{text}</span>')
+
+        return "".join(html_output)

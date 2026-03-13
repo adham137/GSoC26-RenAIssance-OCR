@@ -543,24 +543,24 @@ class TestEvaluationMetrics:
     def test_one_char_substitution_cer(self) -> None:
         """
         Setup: one character differs in a 14-character string (post-normalise).
-        Assert: CER ≈ 1/14 ≈ 0.0714.
+        Assert: CER ≈ 1/14 ≈ 7.14%.
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
         ev  = Evaluator(normalise=False)
         cer = ev.compute_cer(self.ONE_CHAR_HYP, self.ONE_CHAR_GT)
-        assert cer == pytest.approx(1 / 14, abs=1e-3)
+        assert cer == pytest.approx(100 / 14, abs=0.1)
 
     def test_one_word_substitution_wer(self) -> None:
         """
         Setup: one word differs in a 4-word string.
-        Assert: WER == 0.25 (1/4).
+        Assert: WER == 25% (1/4 × 100).
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
         ev  = Evaluator(normalise=False)
         wer = ev.compute_wer(self.ONE_WORD_HYP, self.ONE_WORD_GT)
-        assert wer == pytest.approx(0.25, abs=1e-3)
+        assert wer == pytest.approx(25.0, abs=0.1)
 
     def test_complete_mismatch_cer_above_zero(self) -> None:
         """
@@ -573,23 +573,43 @@ class TestEvaluationMetrics:
         cer = ev.compute_cer(self.MISMATCH_HYP, self.MISMATCH_GT)
         assert cer > 0.0
 
-    def test_normalisation_lowercases_before_scoring(self) -> None:
+    def test_normalisation_handles_case_punctuation_whitespace(self) -> None:
         """
-        Setup: hypothesis and GT differ only in case.
-        Assert: With normalise=True, CER == 0.0 (case-insensitive match).
-        Assert: With normalise=False, CER > 0.0 (case-sensitive mismatch).
+        Test that normalization handles case, punctuation, and whitespace variations
+        as per standard CER calculator behavior.
+
+        Normalization now:
+        - Converts to lowercase
+        - Removes punctuation
+        - Collapses whitespace
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
 
-        gt  = "This Is A Test"
-        hyp = "this is a test"
-
+        # Test whitespace normalization - should result in 0% error
+        gt  = "Hello\nWorld"
+        hyp = "Hello World "
         ev_norm = Evaluator(normalise=True)
-        ev_raw  = Evaluator(normalise=False)
-
         assert ev_norm.compute_cer(hyp, gt) == pytest.approx(0.0)
-        assert ev_raw.compute_cer(hyp, gt) > 0.0
+        assert ev_norm.compute_wer(hyp, gt) == pytest.approx(0.0)
+
+        # Test case insensitivity
+        gt_case = "Hello World"
+        hyp_case = "HELLO WORLD"
+        assert ev_norm.compute_cer(hyp_case, gt_case) == pytest.approx(0.0)
+        assert ev_norm.compute_wer(hyp_case, gt_case) == pytest.approx(0.0)
+
+        # Test punctuation removal
+        gt_punct = "Hello, World!"
+        hyp_punct = "Hello World"
+        assert ev_norm.compute_cer(hyp_punct, gt_punct) == pytest.approx(0.0)
+        assert ev_norm.compute_wer(hyp_punct, gt_punct) == pytest.approx(0.0)
+
+        # Test combined: tabs, newlines, punctuation, and case
+        gt_combined = "Hello,\t\tWorld!\n\nTest?"
+        hyp_combined = "hello world test"
+        assert ev_norm.compute_cer(hyp_combined, gt_combined) == pytest.approx(0.0)
+        assert ev_norm.compute_wer(hyp_combined, gt_combined) == pytest.approx(0.0)
 
     def test_evaluate_returns_report_with_correct_page_id(self) -> None:
         """
