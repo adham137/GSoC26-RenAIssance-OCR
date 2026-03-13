@@ -170,12 +170,15 @@ class OCRResult(BaseModel):
     agentic_trace : list[AgenticTrace]
         Ordered list of every step taken during the ReAct loop.
         Empty for one-shot modes.
+    image_path : str | None
+        Path to the manuscript image for display. Optional.
     """
     page_id          : str
     raw_text         : str
     execution_mode   : ExecutionMode
     confidence_score : float | None          = None
     agentic_trace    : list[AgenticTrace]    = Field(default_factory=list)
+    image_path       : str | None            = None
 
 
 class EvaluationReport(BaseModel):
@@ -197,12 +200,16 @@ class EvaluationReport(BaseModel):
     error_heatmap_path : str | None
         Path to the generated error-overlay image, or ``None`` if
         visualisation was not requested.
+    char_diff_html : str | None
+        HTML string with character-level highlighting showing differences
+        between OCR output and ground truth. Red = wrong/missing chars.
     """
     page_id             : str
     cer_score           : float
     wer_score           : float
     frequent_errors     : dict[str, dict[str, int]] = Field(default_factory=dict)
     error_heatmap_path  : str | None                = None
+    char_diff_html      : str | None                = None
 
 
 class ParsedTranscription(BaseModel):

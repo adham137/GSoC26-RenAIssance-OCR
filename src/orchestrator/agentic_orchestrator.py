@@ -178,10 +178,11 @@ class AgenticOrchestrator:
         self.trace_logger.record(trace_entry)
 
         return OCRResult(
-            page_id        = page.page_id,
-            raw_text       = text,
-            execution_mode = self.execution_mode,
-            agentic_trace  = [trace_entry],
+            page_id=page.page_id,
+            raw_text=text,
+            execution_mode=self.execution_mode,
+            agentic_trace=[trace_entry],
+            image_path=page.image_path,
         )
 
     # ------------------------------------------------------------------
@@ -337,8 +338,9 @@ class AgenticOrchestrator:
         current_text = self.executor._parse_transcription(current_text)
 
         return OCRResult(
-            page_id        = page.page_id,
-            raw_text       = current_text,
-            execution_mode = self.execution_mode,
-            agentic_trace  = traces,
+            page_id=page.page_id,
+            raw_text=current_text,
+            execution_mode=self.execution_mode,
+            agentic_trace=traces,
+            image_path=page.image_path,
         )
