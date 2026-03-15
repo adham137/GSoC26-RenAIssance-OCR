@@ -44,6 +44,7 @@ watchdog>=4.0.0               # Streamlit file watcher
 # ── Logging / Config ─────────────────────────────────────────────────────────
 python-dotenv>=1.0.1
 rich>=13.7.1                  # Pretty console logging
+symspellpy>=6.7.0             # Word segmentation for lexical post-processing
 
 # ── Testing ──────────────────────────────────────────────────────────────────
 pytest>=8.2.0

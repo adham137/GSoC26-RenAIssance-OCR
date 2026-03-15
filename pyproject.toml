@@ -25,6 +25,7 @@ dependencies = [
     "rich>=13.7.1",
     "sentencepiece>=0.2.0",
     "streamlit>=1.35.0",
+    "symspellpy>=6.7.0",
     "torch>=2.3.0",
     "torchvision>=0.20.0",
     "transformers>=4.49.0",

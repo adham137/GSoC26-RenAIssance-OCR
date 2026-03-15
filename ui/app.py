@@ -139,6 +139,12 @@ with st.sidebar:
         help="Show token generation stats in the Generation Logs window.",
     )
 
+    use_lexical_correction = st.checkbox(
+        label="Enable Lexical Post-Processing",
+        value=False,
+        help="Applies heuristic spacing corrections (e.g., splitting 'dela' to 'de la') to reduce Word Error Rate.",
+    )
+
     st.markdown("---")
     st.subheader("📂 Input Document")
     uploaded_file = st.file_uploader(
@@ -254,6 +260,7 @@ def _run_pipeline(
     use_sdpa: bool = True,
     use_compile: bool = False,
     max_new_tokens: int = 768,
+    use_lexical_correction: bool = False,
 ) -> None:
     """
     Lazy-import and execute the full pipeline. Called only when the user
@@ -268,6 +275,7 @@ def _run_pipeline(
     from src.logger.trace_logger import TraceLogger
     from src.model_engine.model_executor import ModelExecutor
     from src.orchestrator.agentic_orchestrator import AgenticOrchestrator
+    from src.postprocessing.lexical_processor import LexicalProcessor
     from src.prompt_manager.prompt_registry import PromptRegistry
 
     # ── Parse ground truth text ─────────────────────────────────────────
@@ -284,6 +292,7 @@ def _run_pipeline(
 
     class StreamlitLogHandler(logging.Handler):
         """Custom logging handler that writes to Streamlit UI."""
+
         def emit(self, record):
             msg = self.format(record)
             log_output.write(msg + "\n")
@@ -343,9 +352,7 @@ def _run_pipeline(
     try:
         executor.load_model()
     except NotImplementedError:
-        st.error(
-            "ModelExecutor.load_model() is not yet implemented."
-        )
+        st.error("ModelExecutor.load_model() is not yet implemented.")
         progress_bar.empty()
         return
     except RuntimeError as exc:
@@ -357,6 +364,9 @@ def _run_pipeline(
 
     # ── Instantiate evaluator ────────────────────────────────────────────
     evaluator = Evaluator(output_dir=str(ROOT / "data" / "output_images"))
+
+    # ── Instantiate lexical processor (if enabled) ───────────────────────
+    lexical_processor = LexicalProcessor() if use_lexical_correction else None
 
     # ── Step 3: Process each page ────────────────────────────────────────
     results = []
@@ -377,6 +387,10 @@ def _run_pipeline(
             execution_mode=execution_mode,
         )
         result = orchestrator.run(page)
+
+        # Apply lexical correction if enabled
+        if use_lexical_correction and lexical_processor:
+            result.raw_text = lexical_processor.process(result.raw_text)
 
         # Run evaluation if GT is available for this page
         eval_report = None
@@ -421,6 +435,7 @@ if run_button and uploaded_file is not None:
         use_sdpa=use_sdpa,
         use_compile=use_compile,
         max_new_tokens=max_new_tokens,
+        use_lexical_correction=use_lexical_correction,
     )
 
 # ---------------------------------------------------------------------------
@@ -516,14 +531,14 @@ with col_text:
         m1.metric(
             "Character Error Rate (CER)",
             f"{eval_report.cer_score:.2f}%",
-            help="CER = (Substitutions + Deletions + Insertions) / Reference Length × 100. Lower is better (0% = perfect match)."
+            help="CER = (Substitutions + Deletions + Insertions) / Reference Length × 100. Lower is better (0% = perfect match).",
         )
         m2.metric(
             "Word Error Rate (WER)",
             f"{eval_report.wer_score:.2f}%",
-            help="WER = (Substitutions + Deletions + Insertions) / Reference Word Count × 100. Lower is better (0% = perfect match)."
+            help="WER = (Substitutions + Deletions + Insertions) / Reference Word Count × 100. Lower is better (0% = perfect match).",
         )
-        
+
         # Display character-level diff visualization
         if eval_report.char_diff_html:
             st.markdown("#### 🔍 Character-Level Comparison")
@@ -532,7 +547,8 @@ with col_text:
             )
 
             # CSS styling for the semantic diff display
-            st.markdown("""
+            st.markdown(
+                """
                 <style>
                 .semantic-diff {
                     font-family: 'Courier New', monospace;
@@ -560,26 +576,32 @@ with col_text:
                     border-radius: 2px;
                 }
                 </style>
-            """, unsafe_allow_html=True)
+            """,
+                unsafe_allow_html=True,
+            )
 
             # Display the semantic diff HTML
             st.markdown(
                 f'<div class="semantic-diff">{eval_report.char_diff_html}</div>',
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
-        
+
         # Display character confusion matrix
         if eval_report.frequent_errors:
             st.markdown("#### 🔤 Character Substitution Patterns")
-            st.caption("Shows systematic errors (e.g., long-s → f in historical manuscripts)")
-            
+            st.caption(
+                "Shows systematic errors (e.g., long-s → f in historical manuscripts)"
+            )
+
             error_rows = []
             for gt_char, predictions in eval_report.frequent_errors.items():
                 for pred_char, count in predictions.items():
-                    display_gt = '·space·' if gt_char == ' ' else gt_char
-                    display_pred = '·space·' if pred_char == ' ' else pred_char
-                    error_rows.append(f"**{display_gt}** → **{display_pred}** : {count} times")
-            
+                    display_gt = "·space·" if gt_char == " " else gt_char
+                    display_pred = "·space·" if pred_char == " " else pred_char
+                    error_rows.append(
+                        f"**{display_gt}** → **{display_pred}** : {count} times"
+                    )
+
             st.markdown("\n".join(error_rows[:15]))  # Show top 15 errors
 
 # ── Agentic Trace expander ───────────────────────────────────────────────
