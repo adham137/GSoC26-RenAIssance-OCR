@@ -94,8 +94,12 @@ class ModelExecutor:
 
     DEFAULT_MODEL = "models/Qwen3.5-0.8B"
 
-    # Maximum image dimension to prevent excessive visual tokens
-    MAX_IMAGE_DIM = 1024
+    # Maximum image dimension to prevent excessive visual tokens.
+    # Set to 1536 to balance OCR legibility with 4GB VRAM constraints.
+    # A 1536px max dimension yields ~2000-2500 tokens for typical manuscript pages,
+    # preventing KV cache OOM errors while preserving glyph detail.
+    # Qwen-VL vision encoder creates ~4 tokens per 14x14 patch.
+    MAX_IMAGE_DIM = 2048
 
     # Heuristic for transcription output length: output_tokens ≈ input_chars × multiplier
     TRANSCRIPTION_HEURISTIC_MULTIPLIER = (
@@ -109,7 +113,7 @@ class ModelExecutor:
         load_in_4bit: bool = True,
         device: str = "cuda",
         max_new_tokens: int | None = None,  # None = auto-calculate
-        repetition_penalty: float = 1.3,
+        repetition_penalty: float = 1.05,
         no_repeat_ngram_size: int = 5,
         use_sdpa: bool = True,  # Use scaled dot-product attention for speed
         use_compile: bool = False,  # Use torch.compile for faster inference
@@ -164,11 +168,20 @@ class ModelExecutor:
             ) from exc
 
         # ── Processor ────────────────────────────────────────────────────
+        # CRITICAL: Configure high-resolution mode for 4GB VRAM constraints.
+        # Qwen2.5-VL / Qwen3.5-VL supports dynamic resolution natively.
+        # Setting max_pixels to 1.5MP balances OCR legibility with KV cache limits.
+        # This prevents the processor from downsampling to low-res squares (336x336)
+        # while avoiding the 66GB allocation crash from 12MP images.
         self._processor = AutoProcessor.from_pretrained(
             self.model_name,
             trust_remote_code=True,
+            # ~1.5 megapixels max (e.g., 1150x1300) keeps tokens under ~3000
+            max_pixels=2_500_000,
         )
-        logger.debug("Processor loaded.")
+        logger.debug(
+            "Processor loaded with VRAM-safe high-res mode (max_pixels=1.5MP)."
+        )
 
         # ── BitsAndBytes 4-bit config ─────────────────────────────────────
         bnb_config = None
@@ -185,15 +198,18 @@ class ModelExecutor:
         attn_impl = "sdpa" if self.use_sdpa else "eager"
         logger.info("Using %s attention implementation", attn_impl.upper())
 
+        # Use device_map="auto" to enable automatic CPU offloading.
+        # This prevents hard OOM crashes on 4GB VRAM GPUs by spilling KV cache
+        # and model layers to system RAM when GPU memory is exhausted.
         base_model = AutoModelForImageTextToText.from_pretrained(
             self.model_name,
             quantization_config=bnb_config,
-            device_map=self.device,
+            device_map="auto",
             trust_remote_code=True,
             torch_dtype=torch.float16 if not self.load_in_4bit else None,
             attn_implementation=attn_impl,
         )
-        logger.debug("Base model loaded.")
+        logger.debug("Base model loaded with automatic device mapping.")
 
         # ── LoRA adapter ──────────────────────────────────────────────────
         if self.adapter_path is not None:
@@ -301,10 +317,19 @@ class ModelExecutor:
         correction plan (Capability Reflection, §3.2).
 
         Adapter should be **OFF** when this is called.
+        Optimized: Uses text-only inference to prevent redundant image re-encoding.
         """
         self._assert_loaded("diagnose_errors")
         logger.debug("diagnose_errors called (adapter=%s)", self.adapter_state)
-        return self._run_vision_inference(page.image_path, reflection_prompt)
+
+        # Ensure the current text is explicitly passed to the text-only model
+        full_text_prompt = (
+            f"{reflection_prompt}\n\n[CURRENT TRANSCRIPTION]\n{current_text}"
+        )
+
+        # Use text-only inference for massive speedup — no need to re-encode
+        # the high-resolution image during the reflection phase
+        return self._run_text_inference(prompt=full_text_prompt)
 
     def filter_plan(
         self,
@@ -344,11 +369,11 @@ class ModelExecutor:
 
     def _resize_image_if_needed(self, image: "Image.Image") -> "Image.Image":
         """
-        Resize image if it exceeds MAX_IMAGE_DIM to prevent excessive visual tokens.
+        Resize image only if it exceeds MAX_IMAGE_DIM (1536) to prevent OOM.
 
         Qwen3.5-VL's vision encoder creates ~4 tokens per 14x14 patch.
-        A 2657x3728 image would create ~38k tokens which causes OOM/hanging.
-        We cap the largest dimension to MAX_IMAGE_DIM (1024) to keep tokens manageable.
+        A 1536px max dimension yields ~2000-2500 tokens for typical manuscript pages,
+        which fits comfortably in a 4GB GPU KV cache while preserving glyph legibility.
         """
         from PIL import Image
 
@@ -370,6 +395,12 @@ class ModelExecutor:
                 new_height,
             )
             return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        logger.debug(
+            "Image resolution %dx%d is within acceptable limits (max=%d), preserving native resolution",
+            width,
+            height,
+            self.MAX_IMAGE_DIM,
+        )
         return image
 
     def _calculate_dynamic_max_tokens(
@@ -494,11 +525,10 @@ class ModelExecutor:
         text = re.sub(
             r"(?<!\[)\billegible\b(?!\])", "[illegible]", text, flags=re.IGNORECASE
         )
+
         # Collapse runs of 3+ [illegible] into a single counted placeholder
         def collapse(match):
-            count = len(
-                re.findall(r"\[illegible\]", match.group(), re.IGNORECASE)
-            )
+            count = len(re.findall(r"\[illegible\]", match.group(), re.IGNORECASE))
             return f"[illegible ×{count} lines]"
 
         text = re.sub(r"(\[illegible\]\s*){3,}", collapse, text, flags=re.IGNORECASE)

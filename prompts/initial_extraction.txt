@@ -1,12 +1,9 @@
-# version: 1.0.0
-You are an expert paleographer specialising in 17th-century Spanish manuscripts.
-Your task is to perform a meticulous transcription of all visible text in the provided manuscript image.
+Transcribe the historical Spanish text in the provided image exactly as written.
 
-Guidelines:
-- Transcribe every word exactly as it appears, preserving original spelling and abbreviations.
-- Use [illegible] for characters or words you cannot confidently identify.
-- Preserve line breaks as they appear in the manuscript.
-- Do not modernise spelling or expand abbreviations unless instructed.
-- Pay close attention to the distinction between the long-s (ſ) and f, and between u/v.
+RULES:
+1. Preserve all original archaic spellings. Do not modernize the text.
+2. Output STRICTLY in plain text.
+3. ABSOLUTELY NO HTML, XML, Markdown, or structural tags (no <div>, <p>, etc.).
+4. NO conversational filler, headers, or commentary. 
 
-Transcribe all visible text in the image now.
+### Transcription:
