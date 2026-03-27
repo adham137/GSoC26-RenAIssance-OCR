@@ -33,18 +33,40 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 import streamlit as st
+
+# ---------------------------------------------------------------------------
+# Load .env file BEFORE anything else
+# ---------------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
 
 # ---------------------------------------------------------------------------
 # sys.path fix — must happen BEFORE any 'from src.*' import.
 # ---------------------------------------------------------------------------
-ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("PYTHONPATH", str(ROOT))
 
+import yaml
+
 from src.models import ExecutionMode
+from src.model_engine.adapter_downloader import AdapterDownloader, DownloadProgress
+
+# ---------------------------------------------------------------------------
+# Load config at module level
+# ---------------------------------------------------------------------------
+
+_config_path = ROOT / "config.yaml"
+try:
+    with open(_config_path) as _f:
+        _app_config = yaml.safe_load(_f)
+    _active_backend: str = _app_config.get("backend", "local")
+except FileNotFoundError:
+    _app_config = {}
+    _active_backend = "local"
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -64,6 +86,23 @@ with st.sidebar:
     st.title("⚙️ Configuration")
     st.markdown("---")
 
+    # Backend indicator
+    if _active_backend == "openrouter":
+        _or_model = _app_config.get("openrouter", {}).get("model", "unknown model")
+        st.success(f"🌐 **Backend: OpenRouter**\n\n`{_or_model}`")
+        _api_key_set = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+        if not _api_key_set:
+            st.warning(
+                "⚠️ `OPENROUTER_API_KEY` not set. "
+                "Pipeline will fail. Set it in your `.env` file.",
+                icon="🔑",
+            )
+        else:
+            st.caption("✅ API key detected")
+    else:
+        st.info("💻 **Backend: Local model**")
+    st.markdown("---")
+
     execution_mode_label = st.selectbox(
         label="Execution Mode",
         options=[m.value for m in ExecutionMode],
@@ -77,17 +116,69 @@ with st.sidebar:
     )
     execution_mode = ExecutionMode(execution_mode_label)
 
-    _adapter_required = execution_mode in (
-        ExecutionMode.ADAPTER_ONE_SHOT,
-        ExecutionMode.ADAPTER_REACT,
-    )
-    adapter_path_input = st.text_input(
-        label="LoRA Adapter Path"
-        + ("" if _adapter_required else " (not used in base modes)"),
-        value="" if not _adapter_required else "models/lora_manuscript_v1",
-        placeholder="models/lora_manuscript_v1",
-        disabled=not _adapter_required,
-    )
+    # Adapter controls only shown for local backend
+    if _active_backend == "local":
+        _adapter_required = execution_mode in (
+            ExecutionMode.ADAPTER_ONE_SHOT,
+            ExecutionMode.ADAPTER_REACT,
+        )
+
+        # Get available adapters from models directory
+        downloader = AdapterDownloader()
+        available_adapters = downloader.list_available_adapters()
+        adapter_options = [str(p) for p in available_adapters]
+
+        adapter_path_input = st.text_input(
+            label="LoRA Adapter Path"
+            + ("" if _adapter_required else " (not used in base modes)"),
+            value="" if not _adapter_required else "models/lora_manuscript_v1",
+            placeholder="models/lora_manuscript_v1",
+            disabled=not _adapter_required,
+            help="Path to adapter directory or select from downloaded adapters below",
+        )
+
+        # Show available adapters if any exist
+        if available_adapters and _adapter_required:
+            with st.expander("📁 Available Downloaded Adapters", expanded=False):
+                for adapter_path in available_adapters:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.caption(f"`{adapter_path}`")
+                    with col2:
+                        if st.button(
+                            "Use",
+                            key=f"use_adapter_{adapter_path.name}",
+                            type="secondary",
+                        ):
+                            st.session_state.selected_adapter_path = str(adapter_path)
+                            st.rerun()
+
+                if not available_adapters:
+                    st.info(
+                        "No adapters downloaded yet. Use the download section above."
+                    )
+
+        # Allow user to select a downloaded adapter
+        if (
+            hasattr(st.session_state, "selected_adapter_path")
+            and st.session_state.selected_adapter_path
+        ):
+            adapter_path_input = st.session_state.selected_adapter_path
+            st.info(f"✅ Using adapter: `{adapter_path_input}`")
+            if st.button("Clear selection", key="clear_adapter_selection"):
+                st.session_state.selected_adapter_path = None
+                st.rerun()
+    else:
+        adapter_path_input = ""
+        if execution_mode in (
+            ExecutionMode.ADAPTER_ONE_SHOT,
+            ExecutionMode.ADAPTER_REACT,
+        ):
+            st.info(
+                "ℹ️ Adapter modes run as base modes when using the OpenRouter backend. "
+                "The execution mode label is preserved in logs.",
+                icon="🔄",
+            )
 
     max_iterations = st.slider(
         label="Max Reflection Iterations",
@@ -109,41 +200,146 @@ with st.sidebar:
             "Maximum tokens the model can generate per page. "
             "A manuscript page is typically 400–800 tokens. "
             "Lower values = faster generation."
+            if _active_backend == "local"
+            else (
+                "Maximum tokens the API will generate per page. "
+                "Overrides the max_tokens value in config.yaml for this session. "
+                "A manuscript page is typically 400–800 tokens."
+            )
         ),
     )
 
-    load_in_4bit = st.checkbox(
-        label="Load model in 4-bit (BnB)",
-        value=True,
-        help="Reduces VRAM usage. Recommended for consumer GPUs.",
-    )
+    # Local-backend-only controls
+    if _active_backend == "local":
+        load_in_4bit = st.checkbox(
+            label="Load model in 4-bit (BnB)",
+            value=True,
+            help="Reduces VRAM usage. Recommended for consumer GPUs.",
+        )
 
-    use_compile = st.checkbox(
-        label="Compile model (torch.compile)",
-        value=False,
-        help=(
-            "Compiles the model forward pass for ~20-40% faster generation. "
-            "Adds ~2 min warm-up on first run. Best for processing many pages."
-        ),
-    )
+        use_compile = st.checkbox(
+            label="Compile model (torch.compile)",
+            value=False,
+            help=(
+                "Compiles the model forward pass for ~20-40% faster generation. "
+                "Adds ~2 min warm-up on first run. Best for processing many pages."
+            ),
+        )
 
-    use_sdpa = st.checkbox(
-        label="Use SDPA attention (faster)",
-        value=True,
-        help="Scaled Dot-Product Attention for faster inference.",
-    )
+        use_sdpa = st.checkbox(
+            label="Use SDPA attention (faster)",
+            value=True,
+            help="Scaled Dot-Product Attention for faster inference.",
+        )
 
-    verbose = st.checkbox(
-        label="Verbose generation logging",
-        value=False,
-        help="Show token generation stats in the Generation Logs window.",
-    )
+        verbose = st.checkbox(
+            label="Verbose generation logging",
+            value=False,
+            help="Show token generation stats in the Generation Logs window.",
+        )
+    else:
+        load_in_4bit = False
+        use_compile = False
+        use_sdpa = False
+        # For OpenRouter, always show API request/response logs
+        verbose = True
+        st.info(
+            "ℹ️ API request/response logs are shown automatically for OpenRouter backend.",
+            icon="📡",
+        )
 
     use_lexical_correction = st.checkbox(
         label="Enable Lexical Post-Processing",
         value=False,
         help="Applies heuristic spacing corrections (e.g., splitting 'dela' to 'de la') to reduce Word Error Rate.",
     )
+
+    st.markdown("---")
+
+    # Adapter download section only for local backend
+    if _active_backend == "local":
+        # ── Adapter Download Section ─────────────────────────────────────────
+        with st.expander("📥 Download Adapter from Hugging Face", expanded=False):
+            st.caption("Download LoRA adapters from Hugging Face Hub")
+
+            hf_repo_id = st.text_input(
+                label="Hugging Face Repo ID",
+                placeholder="username/my-adapter",
+                key="hf_repo_id",
+                help="Enter the Hugging Face repository ID (e.g., 'username/adapter-name')",
+            )
+
+            hf_token = st.text_input(
+                label="Hugging Face Token (optional)",
+                type="password",
+                placeholder="hf_xxxxxxxxxxxxx",
+                key="hf_token",
+                help="Required for private repositories. Get your token from huggingface.co/settings/tokens",
+            )
+
+            adapter_local_name = st.text_input(
+                label="Local Name (optional)",
+                placeholder="my_adapter",
+                key="adapter_local_name",
+                help="Custom name for the downloaded adapter. Uses repo name if empty.",
+            )
+
+            # Download button with callback
+            download_clicked = st.button(
+                label="⬇️ Download",
+                type="primary",
+                use_container_width=True,
+                disabled=not hf_repo_id.strip(),
+                key="download_adapter_btn",
+            )
+
+            # Handle download immediately when button is clicked
+            if download_clicked and hf_repo_id.strip():
+                progress_bar = st.progress(0, text="Starting download...")
+                status_text = st.empty()
+                result_container = st.empty()
+
+                try:
+                    # Create progress callback
+                    def on_progress(prog: DownloadProgress):
+                        if prog.status == "downloading":
+                            progress_bar.progress(
+                                max(prog.percentage / 100, 0.01),
+                                text=f"Downloading {prog.current_file or '...'} ({prog.downloaded_files}/{prog.total_files} files)",
+                            )
+                            status_text.caption(
+                                f"📥 {prog.downloaded_files}/{prog.total_files} files"
+                            )
+                        elif prog.status == "validating":
+                            progress_bar.progress(1.0, text="Validating adapter...")
+                            status_text.caption("⏳ Validating downloaded files...")
+
+                    # Download the adapter
+                    downloader = AdapterDownloader()
+                    adapter_path = downloader.download(
+                        repo_id=hf_repo_id.strip(),
+                        local_dir_name=adapter_local_name.strip()
+                        if adapter_local_name.strip()
+                        else None,
+                        token=hf_token.strip() if hf_token.strip() else None,
+                        progress_callback=on_progress,
+                    )
+
+                    # Success
+                    progress_bar.empty()
+                    status_text.empty()
+                    result_container.success(
+                        f"✅ Adapter downloaded to: `{adapter_path}`"
+                    )
+
+                    # Store in session state for later use
+                    if str(adapter_path) not in st.session_state.downloaded_adapters:
+                        st.session_state.downloaded_adapters.append(str(adapter_path))
+
+                except Exception as e:
+                    progress_bar.empty()
+                    status_text.empty()
+                    result_container.error(f"❌ Download failed: {str(e)}")
 
     st.markdown("---")
     st.subheader("📂 Input Document")
@@ -158,12 +354,17 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    run_button = st.button(
+    _api_key_missing = _active_backend == "openrouter" and not bool(
+        os.environ.get("OPENROUTER_API_KEY", "").strip()
+    )
+    run_pipeline_button = st.button(
         label="🚀 Run Pipeline",
         type="primary",
         use_container_width=True,
-        disabled=uploaded_file is None,
+        disabled=uploaded_file is None or _api_key_missing,
     )
+    if _api_key_missing:
+        st.caption("❌ Cannot run: set `OPENROUTER_API_KEY` first.")
 
 # ---------------------------------------------------------------------------
 # Main area — Header
@@ -190,13 +391,17 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = 0
 if "pipeline_done" not in st.session_state:
     st.session_state.pipeline_done = False
+if "downloaded_adapters" not in st.session_state:
+    st.session_state.downloaded_adapters = []
+if "active_backend" not in st.session_state:
+    st.session_state.active_backend = _active_backend
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
 
-def _render_trace_step(trace) -> None:
+def _render_trace_step(trace, backend_type: str = "local") -> None:
     """Render a single AgenticTrace entry inside the Streamlit expander."""
     STEP_CONFIG = {
         "INIT": ("🔍", st.info, "blue"),
@@ -207,9 +412,14 @@ def _render_trace_step(trace) -> None:
     }
     icon, box_fn, _ = STEP_CONFIG.get(trace.step_type, ("❓", st.info, "grey"))
 
-    adapter_badge = (
-        "🟢 **Adapter: ON**" if trace.adapter_state == "ON" else "🔴 **Adapter: OFF**"
-    )
+    if backend_type == "openrouter":
+        adapter_badge = "⚪ **Adapter: N/A (API)**"
+    else:
+        adapter_badge = (
+            "🟢 **Adapter: ON**"
+            if trace.adapter_state == "ON"
+            else "🔴 **Adapter: OFF**"
+        )
 
     header = (
         f"{icon} **Iter {trace.iteration} | {trace.step_type}** "
@@ -254,11 +464,8 @@ def _run_pipeline(
     execution_mode: ExecutionMode,
     adapter_path: str,
     max_iters: int,
-    load_4bit: bool,
     ground_truth_file,
     verbose: bool = False,
-    use_sdpa: bool = True,
-    use_compile: bool = False,
     max_new_tokens: int = 768,
     use_lexical_correction: bool = False,
 ) -> None:
@@ -273,10 +480,17 @@ def _run_pipeline(
     from src.evaluation.evaluator import Evaluator
     from src.ingestion.pdf_handler import PDFHandler
     from src.logger.trace_logger import TraceLogger
-    from src.model_engine.model_executor import ModelExecutor
+    from src.model_engine.backend_factory import create_backend
     from src.orchestrator.agentic_orchestrator import AgenticOrchestrator
     from src.postprocessing.lexical_processor import LexicalProcessor
     from src.prompt_manager.prompt_registry import PromptRegistry
+
+    # ── Load backend configuration from config.yaml ──────────────────────
+    import yaml
+
+    config_path = ROOT / "config.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
 
     # ── Parse ground truth text ─────────────────────────────────────────
     # Treat the entire file content as the GT for the first page
@@ -297,20 +511,36 @@ def _run_pipeline(
             msg = self.format(record)
             log_output.write(msg + "\n")
             with log_container:
-                with st.expander("📋 Generation Logs", expanded=True):
+                # For OpenRouter, show API logs in a prominent expander
+                expander_label = (
+                    "📡 OpenRouter API Request/Response Logs"
+                    if _active_backend == "openrouter"
+                    else "📋 Generation Logs"
+                )
+                with st.expander(expander_label, expanded=True):
                     st.code(
-                        log_output.getvalue() or "Waiting for generation...",
+                        log_output.getvalue() or "Waiting for logs...",
                         language="log",
                         line_numbers=True,
                     )
 
     # Set up handler for model_executor logger
+    _loggers_to_watch = []
     if verbose:
         log_handler = StreamlitLogHandler()
         log_handler.setFormatter(logging.Formatter("%(message)s"))
-        model_logger = logging.getLogger("src.model_engine.model_executor")
-        model_logger.addHandler(log_handler)
-        model_logger.setLevel(logging.INFO)
+        _logger_names = (
+            ["src.model_engine.openrouter_backend"]
+            if _active_backend == "openrouter"
+            else ["src.model_engine.model_executor"]
+        )
+        for _logger_name in _logger_names:
+            _lg = logging.getLogger(_logger_name)
+            _lg.addHandler(log_handler)
+            _lg.setLevel(
+                logging.DEBUG if _active_backend == "openrouter" else logging.INFO
+            )
+            _loggers_to_watch.append((_lg, log_handler))
 
     # ── Save uploaded PDF to a temp file ─────────────────────────────────
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -331,34 +561,24 @@ def _run_pipeline(
         progress_bar.empty()
         return
 
-    # ── Step 2: Load model ───────────────────────────────────────────────
-    progress_bar.progress(25, text="🤖 Loading VLM (this may take a minute)…")
-
-    _base_modes = (ExecutionMode.BASE_ONE_SHOT, ExecutionMode.BASE_REACT)
-    resolved_adapter_path = (
-        None
-        if execution_mode in _base_modes or not adapter_path.strip()
-        else adapter_path.strip()
+    # ── Step 2: Load backend ───────────────────────────────────────────────
+    _backend_load_text = (
+        "☁️ Connecting to OpenRouter API…"
+        if _active_backend == "openrouter"
+        else "🤖 Loading local model weights…"
     )
+    progress_bar.progress(25, text=_backend_load_text)
 
-    executor = ModelExecutor(
-        adapter_path=resolved_adapter_path,
-        load_in_4bit=load_4bit,
-        use_sdpa=use_sdpa,
-        use_compile=use_compile,
-        max_new_tokens=max_new_tokens,
-        verbose=verbose,
-    )
     try:
-        executor.load_model()
-    except NotImplementedError:
-        st.error("ModelExecutor.load_model() is not yet implemented.")
+        backend = create_backend(config)
+    except (KeyError, ValueError, EnvironmentError) as exc:
+        st.error(f"Failed to initialize backend: {exc}")
         progress_bar.empty()
         return
-    except RuntimeError as exc:
-        st.error(f"Model failed to load: {exc}")
-        progress_bar.empty()
-        return
+
+    # Allow the UI slider to override the config.yaml max_tokens at runtime
+    if _active_backend == "openrouter" and hasattr(backend, "_max_tokens"):
+        backend._max_tokens = max_new_tokens
 
     registry = PromptRegistry(prompts_dir=str(ROOT / "prompts"))
 
@@ -380,7 +600,7 @@ def _run_pipeline(
         )
         trace_logger = TraceLogger(logs_dir=str(ROOT / "logs"), page_id=page.page_id)
         orchestrator = AgenticOrchestrator(
-            executor=executor,
+            executor=backend,
             registry=registry,
             trace_logger=trace_logger,
             max_iterations=max_iters,
@@ -407,9 +627,9 @@ def _run_pipeline(
     progress_bar.progress(100, text="✅ Pipeline complete!")
     progress_bar.empty()
 
-    # Clean up log handler
-    if verbose:
-        model_logger.removeHandler(log_handler)
+    # Clean up log handlers
+    for _lg, _lh in _loggers_to_watch:
+        _lg.removeHandler(_lh)
 
     st.session_state.ocr_results = results
     st.session_state.eval_reports = eval_reports
@@ -423,17 +643,14 @@ def _run_pipeline(
 # Trigger pipeline
 # ---------------------------------------------------------------------------
 
-if run_button and uploaded_file is not None:
+if run_pipeline_button and uploaded_file is not None:
     _run_pipeline(
         uploaded_file=uploaded_file,
         execution_mode=execution_mode,
         adapter_path=adapter_path_input,
         max_iters=max_iterations,
-        load_4bit=load_in_4bit,
         ground_truth_file=ground_truth_file,
         verbose=verbose,
-        use_sdpa=use_sdpa,
-        use_compile=use_compile,
         max_new_tokens=max_new_tokens,
         use_lexical_correction=use_lexical_correction,
     )
@@ -502,9 +719,21 @@ with col_image:
     #         st.caption("Red highlights = words predicted incorrectly vs ground truth")
     #         st.image(str(heatmap_path), use_column_width=True)
 
+    _adapter_info = (
+        "N/A (API)"
+        if _active_backend == "openrouter"
+        else (
+            "ON"
+            if execution_mode
+            in (ExecutionMode.ADAPTER_ONE_SHOT, ExecutionMode.ADAPTER_REACT)
+            else "OFF"
+        )
+    )
     st.caption(
         f"**Mode:** `{result.execution_mode.value}` | "
+        f"**Backend:** `{_active_backend}` | "
         f"**Iterations:** {len([t for t in result.agentic_trace if t.step_type == 'REFINE'])} | "
+        f"**Adapter:** {_adapter_info} | "
         f"**Confidence:** {result.confidence_score if result.confidence_score else 'N/A'}"
     )
 
@@ -554,7 +783,7 @@ with col_text:
                     font-family: 'Courier New', monospace;
                     font-size: 14px;
                     line-height: 2;
-                    background: #f8f9fa;
+                    background: #6c757d;
                     padding: 15px;
                     border-radius: 5px;
                     border: 1px solid #dee2e6;
@@ -574,6 +803,9 @@ with col_text:
                     text-decoration: none;
                     padding: 1px 3px;
                     border-radius: 2px;
+                }
+                .semantic-diff span {
+                    color: #ffffff;
                 }
                 </style>
             """,
@@ -624,4 +856,4 @@ with st.expander("🧠 Agentic Trace / Logs", expanded=False):
         st.markdown("---")
 
         for trace in result.agentic_trace:
-            _render_trace_step(trace)
+            _render_trace_step(trace, backend_type=_active_backend)
