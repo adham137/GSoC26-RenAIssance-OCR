@@ -239,6 +239,10 @@ class PDFHandler:
         try:
             from PIL import Image
 
+            # Increase decompression bomb limit for high-res manuscript images
+            # Default is 178956970 pixels; 300 DPI scans can exceed this
+            Image.MAX_IMAGE_PIXELS = None  # Disable limit for validation
+
             with Image.open(image_path) as img:
                 w, h = img.size
                 return w > 0 and h > 0

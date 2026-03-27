@@ -42,6 +42,7 @@ from src.models import (
 # Fixtures
 # ===========================================================================
 
+
 @pytest.fixture
 def sample_page(tmp_path: Path) -> DocumentPage:
     """
@@ -50,12 +51,13 @@ def sample_page(tmp_path: Path) -> DocumentPage:
     The PNG is a 10×10 white square — valid enough for Pillow to open.
     """
     from PIL import Image
+
     img_path = tmp_path / "sample_page.png"
     Image.new("RGB", (10, 10), color=(255, 255, 255)).save(str(img_path))
     return DocumentPage(
-        page_id    = "test_page_001",
-        image_path = str(img_path),
-        metadata   = {"source_year": 1640, "page_number": 1},
+        page_id="test_page_001",
+        image_path=str(img_path),
+        metadata={"source_year": 1640, "page_number": 1},
     )
 
 
@@ -73,8 +75,8 @@ def mock_executor() -> MagicMock:
     Tracks calls to set_adapter() / disable_adapter() and returns
     predictable text strings from inference methods.
     """
-    executor                        = MagicMock()
-    executor.adapter_state          = "OFF"       # initial state
+    executor = MagicMock()
+    executor.adapter_state = "OFF"  # initial state
 
     def _set_adapter():
         executor.adapter_state = "ON"
@@ -82,17 +84,21 @@ def mock_executor() -> MagicMock:
     def _disable_adapter():
         executor.adapter_state = "OFF"
 
-    executor.set_adapter.side_effect    = _set_adapter
+    executor.set_adapter.side_effect = _set_adapter
     executor.disable_adapter.side_effect = _disable_adapter
 
     # Inference stubs
-    executor.extract_text.return_value       = "Initial transcription attempt."
-    executor.diagnose_errors.return_value    = "Error: misread long-s as f. Plan: focus on descenders."
-    executor.filter_plan.return_value        = "Plan: focus on descenders."  # feasible subset
-    executor.guided_refinement.return_value  = "Refined transcription text."
+    executor.extract_text.return_value = "Initial transcription attempt."
+    executor.diagnose_errors.return_value = (
+        "Error: misread long-s as f. Plan: focus on descenders."
+    )
+    executor.filter_plan.return_value = "Plan: focus on descenders."  # feasible subset
+    executor.guided_refinement.return_value = "Refined transcription text."
 
     # _parse_transcription stub — returns input unchanged for testing
-    executor._parse_transcription.side_effect = lambda x: x if isinstance(x, str) else str(x)
+    executor._parse_transcription.side_effect = (
+        lambda x: x if isinstance(x, str) else str(x)
+    )
 
     return executor
 
@@ -100,7 +106,7 @@ def mock_executor() -> MagicMock:
 @pytest.fixture
 def mock_registry() -> MagicMock:
     """A PromptRegistry mock that returns the prompt_key as its rendered output."""
-    registry        = MagicMock()
+    registry = MagicMock()
     registry.render = MagicMock(side_effect=lambda key, **_: f"[PROMPT:{key}]")
     return registry
 
@@ -115,6 +121,7 @@ def mock_trace_logger() -> MagicMock:
 # Test 1: Memory Reflection
 # ===========================================================================
 
+
 class TestMemoryReflection:
     """
     Validates the AgenticMemory state machine defined in src/models.py
@@ -126,28 +133,32 @@ class TestMemoryReflection:
         Setup: freshly constructed AgenticMemory.
         Assert: iteration_count=0 and all history lists are empty.
         """
-        assert fresh_memory.iteration_count      == 0
-        assert fresh_memory.past_transcriptions  == []
-        assert fresh_memory.past_reflections     == []
-        assert fresh_memory.past_plans           == []
+        assert fresh_memory.iteration_count == 0
+        assert fresh_memory.past_transcriptions == []
+        assert fresh_memory.past_reflections == []
+        assert fresh_memory.past_plans == []
 
-    def test_record_iteration_appends_to_all_lists(self, fresh_memory: AgenticMemory) -> None:
+    def test_record_iteration_appends_to_all_lists(
+        self, fresh_memory: AgenticMemory
+    ) -> None:
         """
         Setup: call record_iteration() once with known strings.
         Assert: all three lists have exactly one entry and iteration_count == 1.
         """
         fresh_memory.record_iteration(
-            transcription = "Thi5 is a te5t.",
-            reflection    = "Digit 5 is misread from long-s glyph.",
-            plan          = "Re-examine descender strokes.",
+            transcription="Thi5 is a te5t.",
+            reflection="Digit 5 is misread from long-s glyph.",
+            plan="Re-examine descender strokes.",
         )
-        assert fresh_memory.iteration_count         == 1
+        assert fresh_memory.iteration_count == 1
         assert len(fresh_memory.past_transcriptions) == 1
-        assert len(fresh_memory.past_reflections)    == 1
-        assert len(fresh_memory.past_plans)          == 1
-        assert fresh_memory.past_transcriptions[0]  == "Thi5 is a te5t."
+        assert len(fresh_memory.past_reflections) == 1
+        assert len(fresh_memory.past_plans) == 1
+        assert fresh_memory.past_transcriptions[0] == "Thi5 is a te5t."
 
-    def test_memory_prevents_identical_sequential_outputs(self, fresh_memory: AgenticMemory) -> None:
+    def test_memory_prevents_identical_sequential_outputs(
+        self, fresh_memory: AgenticMemory
+    ) -> None:
         """
         Setup: record two iterations with the same transcription.
         Assert: has_stagnated() returns True (refinement stagnation detected).
@@ -157,16 +168,22 @@ class TestMemoryReflection:
         """
         text = "Same text output unchanged."
         fresh_memory.record_iteration(text, "reflection_1", "plan_1")
-        fresh_memory.record_iteration(text, "reflection_2", "plan_2")  # identical transcription
+        fresh_memory.record_iteration(
+            text, "reflection_2", "plan_2"
+        )  # identical transcription
         assert fresh_memory.has_stagnated() is True
 
-    def test_no_stagnation_when_outputs_differ(self, fresh_memory: AgenticMemory) -> None:
+    def test_no_stagnation_when_outputs_differ(
+        self, fresh_memory: AgenticMemory
+    ) -> None:
         """
         Setup: record two iterations with different transcriptions.
         Assert: has_stagnated() returns False — loop should continue.
         """
         fresh_memory.record_iteration("First attempt.", "reflection_1", "plan_1")
-        fresh_memory.record_iteration("Second attempt, improved.", "reflection_2", "plan_2")
+        fresh_memory.record_iteration(
+            "Second attempt, improved.", "reflection_2", "plan_2"
+        )
         assert fresh_memory.has_stagnated() is False
 
     def test_no_stagnation_with_single_entry(self, fresh_memory: AgenticMemory) -> None:
@@ -177,58 +194,87 @@ class TestMemoryReflection:
         fresh_memory.record_iteration("Only one entry.", "reflection_1", "plan_1")
         assert fresh_memory.has_stagnated() is False
 
-    def test_memory_history_grows_monotonically(self, fresh_memory: AgenticMemory) -> None:
+    def test_memory_history_grows_monotonically(
+        self, fresh_memory: AgenticMemory
+    ) -> None:
         """
         Setup: run 3 iterations with distinct content.
         Assert: all list lengths equal 3 and iteration_count == 3.
         """
         for i in range(3):
             fresh_memory.record_iteration(
-                transcription = f"Transcription iteration {i}",
-                reflection    = f"Reflection {i}",
-                plan          = f"Plan {i}",
+                transcription=f"Transcription iteration {i}",
+                reflection=f"Reflection {i}",
+                plan=f"Plan {i}",
             )
         assert fresh_memory.iteration_count == 3
         assert len(fresh_memory.past_transcriptions) == 3
 
-    def test_orchestrator_terminates_on_stagnation(
+    def test_orchestrator_runs_exactly_three_iterations(
         self,
-        sample_page   : DocumentPage,
-        mock_executor : MagicMock,
-        mock_registry : MagicMock,
+        sample_page: DocumentPage,
+        mock_executor: MagicMock,
+        mock_registry: MagicMock,
         mock_trace_logger: MagicMock,
     ) -> None:
         """
-        Setup: configure mock executor so guided_refinement always returns
-               the same string, triggering stagnation after iteration 1.
-        Assert: the returned OCRResult contains a TERMINATE trace entry.
+        Setup: run orchestrator with max_iterations=3.
+        Assert: the loop runs EXACTLY 3 times regardless of output quality.
+        Assert: NO TERMINATE trace entry is emitted (no early termination).
+        Assert: Trace contains exactly: INIT, then 3x(REFLECT, FILTER, REFINE).
 
-        This is an integration test for the orchestrator's stagnation guard.
+        Per Algorithm 1 specification: the loop runs exactly T=3 times.
+        No early termination based on stagnation or empty feasible plan.
         """
         from src.orchestrator.agentic_orchestrator import AgenticOrchestrator
 
-        FIXED_TEXT = "Identical text — will stagnate."
-        mock_executor.extract_text.return_value       = FIXED_TEXT
-        mock_executor.guided_refinement.return_value  = FIXED_TEXT
+        FIXED_TEXT = "Identical text — should NOT trigger early termination."
+        mock_executor.extract_text.return_value = FIXED_TEXT
+        mock_executor.guided_refinement.return_value = FIXED_TEXT
 
         orch = AgenticOrchestrator(
-            executor       = mock_executor,
-            registry       = mock_registry,
-            trace_logger   = mock_trace_logger,
-            max_iterations = 3,
-            execution_mode = ExecutionMode.BASE_REACT,
+            executor=mock_executor,
+            registry=mock_registry,
+            trace_logger=mock_trace_logger,
+            max_iterations=3,
+            execution_mode=ExecutionMode.BASE_REACT,
         )
         result = orch.run(sample_page)
 
         step_types = [t.step_type for t in result.agentic_trace]
-        assert "TERMINATE" in step_types, (
-            "Orchestrator should emit a TERMINATE trace when stagnation is detected."
+
+        # Should have exactly 10 steps: INIT + 3*(REFLECT, FILTER, REFINE)
+        assert len(step_types) == 10, (
+            f"Expected exactly 10 steps (1 INIT + 3 iterations × 3 steps), got {len(step_types)}: {step_types}"
+        )
+
+        # Verify the exact sequence
+        expected_sequence = [
+            "INIT",
+            "REFLECT",
+            "FILTER",
+            "REFINE",
+            "REFLECT",
+            "FILTER",
+            "REFINE",
+            "REFLECT",
+            "FILTER",
+            "REFINE",
+        ]
+        assert step_types == expected_sequence, (
+            f"Step sequence mismatch.\nExpected: {expected_sequence}\nActual: {step_types}"
+        )
+
+        # CRITICAL: No TERMINATE entry — early termination is NOT allowed
+        assert "TERMINATE" not in step_types, (
+            "Orchestrator must NOT terminate early — loop must run exactly 3 times per Algorithm 1."
         )
 
 
 # ===========================================================================
 # Test 2: Dynamic LoRA Switching
 # ===========================================================================
+
 
 class TestDynamicLoRASwitching:
     """
@@ -242,9 +288,9 @@ class TestDynamicLoRASwitching:
 
     def test_adapter_is_off_during_diagnose_errors(
         self,
-        sample_page   : DocumentPage,
-        mock_executor : MagicMock,
-        mock_registry : MagicMock,
+        sample_page: DocumentPage,
+        mock_executor: MagicMock,
+        mock_registry: MagicMock,
         mock_trace_logger: MagicMock,
     ) -> None:
         """
@@ -267,11 +313,11 @@ class TestDynamicLoRASwitching:
         mock_executor.diagnose_errors.side_effect = recording_diagnose
 
         orch = AgenticOrchestrator(
-            executor       = mock_executor,
-            registry       = mock_registry,
-            trace_logger   = mock_trace_logger,
-            max_iterations = 1,
-            execution_mode = ExecutionMode.ADAPTER_REACT,
+            executor=mock_executor,
+            registry=mock_registry,
+            trace_logger=mock_trace_logger,
+            max_iterations=1,
+            execution_mode=ExecutionMode.ADAPTER_REACT,
         )
         orch.run(sample_page)
 
@@ -283,9 +329,9 @@ class TestDynamicLoRASwitching:
 
     def test_adapter_is_on_during_extract_text(
         self,
-        sample_page   : DocumentPage,
-        mock_executor : MagicMock,
-        mock_registry : MagicMock,
+        sample_page: DocumentPage,
+        mock_executor: MagicMock,
+        mock_registry: MagicMock,
         mock_trace_logger: MagicMock,
     ) -> None:
         """
@@ -303,11 +349,11 @@ class TestDynamicLoRASwitching:
         mock_executor.extract_text.side_effect = recording_extract
 
         orch = AgenticOrchestrator(
-            executor       = mock_executor,
-            registry       = mock_registry,
-            trace_logger   = mock_trace_logger,
-            max_iterations = 1,
-            execution_mode = ExecutionMode.ADAPTER_ONE_SHOT,
+            executor=mock_executor,
+            registry=mock_registry,
+            trace_logger=mock_trace_logger,
+            max_iterations=1,
+            execution_mode=ExecutionMode.ADAPTER_ONE_SHOT,
         )
         orch.run(sample_page)
 
@@ -317,9 +363,9 @@ class TestDynamicLoRASwitching:
 
     def test_adapter_is_on_during_guided_refinement(
         self,
-        sample_page   : DocumentPage,
-        mock_executor : MagicMock,
-        mock_registry : MagicMock,
+        sample_page: DocumentPage,
+        mock_executor: MagicMock,
+        mock_registry: MagicMock,
         mock_trace_logger: MagicMock,
     ) -> None:
         """
@@ -337,11 +383,11 @@ class TestDynamicLoRASwitching:
         mock_executor.guided_refinement.side_effect = recording_refine
 
         orch = AgenticOrchestrator(
-            executor       = mock_executor,
-            registry       = mock_registry,
-            trace_logger   = mock_trace_logger,
-            max_iterations = 1,
-            execution_mode = ExecutionMode.ADAPTER_REACT,
+            executor=mock_executor,
+            registry=mock_registry,
+            trace_logger=mock_trace_logger,
+            max_iterations=1,
+            execution_mode=ExecutionMode.ADAPTER_REACT,
         )
         orch.run(sample_page)
 
@@ -360,6 +406,7 @@ class TestDynamicLoRASwitching:
         pytest.importorskip("peft", reason="peft not installed")
 
         from src.model_engine.model_executor import ModelExecutor
+
         executor = ModelExecutor(adapter_path=None)
         # NOTE: load_model() is not called intentionally — we test guard only
         with pytest.raises((RuntimeError, NotImplementedError)):
@@ -367,9 +414,9 @@ class TestDynamicLoRASwitching:
 
     def test_adapter_toggle_count_for_n_iterations(
         self,
-        sample_page   : DocumentPage,
-        mock_executor : MagicMock,
-        mock_registry : MagicMock,
+        sample_page: DocumentPage,
+        mock_executor: MagicMock,
+        mock_registry: MagicMock,
         mock_trace_logger: MagicMock,
     ) -> None:
         """
@@ -391,15 +438,15 @@ class TestDynamicLoRASwitching:
         mock_executor.guided_refinement.side_effect = unique_refinement
 
         orch = AgenticOrchestrator(
-            executor       = mock_executor,
-            registry       = mock_registry,
-            trace_logger   = mock_trace_logger,
-            max_iterations = 3,
-            execution_mode = ExecutionMode.ADAPTER_REACT,
+            executor=mock_executor,
+            registry=mock_registry,
+            trace_logger=mock_trace_logger,
+            max_iterations=3,
+            execution_mode=ExecutionMode.ADAPTER_REACT,
         )
         orch.run(sample_page)
 
-        assert mock_executor.set_adapter.call_count    == 4, (
+        assert mock_executor.set_adapter.call_count == 4, (
             "set_adapter should be called once for initial extraction + once per iteration."
         )
         assert mock_executor.disable_adapter.call_count == 3, (
@@ -410,6 +457,7 @@ class TestDynamicLoRASwitching:
 # ===========================================================================
 # Test 3: PDF to Image Conversion
 # ===========================================================================
+
 
 class TestPDFToImageConversion:
     """
@@ -470,6 +518,7 @@ class TestPDFToImageConversion:
         Assert: FileNotFoundError is raised (not a generic exception).
         """
         from src.ingestion.pdf_handler import PDFHandler
+
         handler = PDFHandler(output_dir=tmp_path / "out")
         with pytest.raises(FileNotFoundError):
             handler.load_pdf(tmp_path / "does_not_exist.pdf")
@@ -493,6 +542,7 @@ class TestPDFToImageConversion:
 # Test 4: Evaluation Metrics
 # ===========================================================================
 
+
 class TestEvaluationMetrics:
     """
     Tests for src/evaluation/evaluator.Evaluator.
@@ -503,19 +553,19 @@ class TestEvaluationMetrics:
 
     # Known test vectors -------------------------------------------------------
     # Perfect match
-    PERFECT_GT   = "this is a test"
-    PERFECT_HYP  = "this is a test"
+    PERFECT_GT = "this is a test"
+    PERFECT_HYP = "this is a test"
 
     # One char substitution in a 14-char string → CER = 1/14 ≈ 0.0714
-    ONE_CHAR_GT  = "this is a test"
+    ONE_CHAR_GT = "this is a test"
     ONE_CHAR_HYP = "this is a tast"  # 'e' → 'a'
 
     # One word substitution in a 4-word string → WER = 1/4 = 0.25
-    ONE_WORD_GT  = "this is a test"
+    ONE_WORD_GT = "this is a test"
     ONE_WORD_HYP = "this is a quiz"  # 'test' → 'quiz'
 
     # Complete mismatch
-    MISMATCH_GT  = "abcde"
+    MISMATCH_GT = "abcde"
     MISMATCH_HYP = "vwxyz"
 
     # --------------------------------------------------------------------------
@@ -527,6 +577,7 @@ class TestEvaluationMetrics:
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
+
         ev = Evaluator(normalise=False)
         assert ev.compute_cer(self.PERFECT_HYP, self.PERFECT_GT) == pytest.approx(0.0)
 
@@ -537,6 +588,7 @@ class TestEvaluationMetrics:
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
+
         ev = Evaluator(normalise=False)
         assert ev.compute_wer(self.PERFECT_HYP, self.PERFECT_GT) == pytest.approx(0.0)
 
@@ -547,7 +599,8 @@ class TestEvaluationMetrics:
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
-        ev  = Evaluator(normalise=False)
+
+        ev = Evaluator(normalise=False)
         cer = ev.compute_cer(self.ONE_CHAR_HYP, self.ONE_CHAR_GT)
         assert cer == pytest.approx(100 / 14, abs=0.1)
 
@@ -558,7 +611,8 @@ class TestEvaluationMetrics:
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
-        ev  = Evaluator(normalise=False)
+
+        ev = Evaluator(normalise=False)
         wer = ev.compute_wer(self.ONE_WORD_HYP, self.ONE_WORD_GT)
         assert wer == pytest.approx(25.0, abs=0.1)
 
@@ -569,7 +623,8 @@ class TestEvaluationMetrics:
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
-        ev  = Evaluator(normalise=False)
+
+        ev = Evaluator(normalise=False)
         cer = ev.compute_cer(self.MISMATCH_HYP, self.MISMATCH_GT)
         assert cer > 0.0
 
@@ -587,7 +642,7 @@ class TestEvaluationMetrics:
         from src.evaluation.evaluator import Evaluator
 
         # Test whitespace normalization - should result in 0% error
-        gt  = "Hello\nWorld"
+        gt = "Hello\nWorld"
         hyp = "Hello World "
         ev_norm = Evaluator(normalise=True)
         assert ev_norm.compute_cer(hyp, gt) == pytest.approx(0.0)
@@ -618,11 +673,12 @@ class TestEvaluationMetrics:
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
-        ev     = Evaluator(normalise=False)
+
+        ev = Evaluator(normalise=False)
         report = ev.evaluate(
-            page_id  = "test_page_042",
-            ocr_text = self.PERFECT_HYP,
-            gt_text  = self.PERFECT_GT,
+            page_id="test_page_042",
+            ocr_text=self.PERFECT_HYP,
+            gt_text=self.PERFECT_GT,
         )
         assert report.page_id == "test_page_042"
 
@@ -633,12 +689,13 @@ class TestEvaluationMetrics:
         """
         pytest.importorskip("jiwer", reason="jiwer not installed")
         from src.evaluation.evaluator import Evaluator
-        ev     = Evaluator(normalise=False)
+
+        ev = Evaluator(normalise=False)
         report = ev.evaluate(
-            page_id  = "test_page_001",
-            ocr_text = self.PERFECT_HYP,
-            gt_text  = self.PERFECT_GT,
-            image_path = None,
+            page_id="test_page_001",
+            ocr_text=self.PERFECT_HYP,
+            gt_text=self.PERFECT_GT,
+            image_path=None,
         )
         assert report.error_heatmap_path is None
 
@@ -653,10 +710,11 @@ class TestEvaluationMetrics:
         """
         pytest.importorskip("Levenshtein", reason="python-Levenshtein not installed")
         from src.evaluation.evaluator import Evaluator
-        ev     = Evaluator(normalise=False)
+
+        ev = Evaluator(normalise=False)
         matrix = ev.build_confusion_matrix(
-            hypothesis = "the fouls sang",   # 's' → 'f' substitution
-            reference  = "the souls sang",
+            hypothesis="the fouls sang",  # 's' → 'f' substitution
+            reference="the souls sang",
         )
         assert "s" in matrix, "GT char 's' should appear in confusion matrix keys."
         assert "f" in matrix.get("s", {}), (
