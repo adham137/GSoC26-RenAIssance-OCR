@@ -124,6 +124,7 @@ Two genuine fine-tuning runs were conducted on `Qwen3.5-0.8B` using LoRA adapter
 |---|---|
 | HuggingFace Dataset | [Ak137/Historical-Spanish-VLM-OCR-Qwen](https://huggingface.co/datasets/Ak137/Historical-Spanish-VLM-OCR-Qwen) |
 | HuggingFace LoRA Adapter | [Ak137/qwen3.5-0.8B-spanish-ocr-lora](https://huggingface.co/Ak137/qwen3.5-0.8B-spanish-ocr-lora) |
+| Training notebook | `notebooks/finetunning_qwen3.5_spanish_ocr.ipynb` |
 
 ---
 
@@ -143,7 +144,6 @@ Two genuine fine-tuning runs were conducted on `Qwen3.5-0.8B` using LoRA adapter
 | HuggingFace Dataset | [Ak137/Handwritten_Historical_Spanish](https://huggingface.co/datasets/Ak137/Handwritten_Historical_Spanish) |
 | HuggingFace LoRA Adapter | [Ak137/qwen3.5-0.8B-handwritten-spanish-ocr-lora](https://huggingface.co/Ak137/qwen3.5-0.8B-handwritten-spanish-ocr-lora) |
 | Training notebook | `notebooks/finetunning_qwen3.5_spanish_ocr.ipynb` |
-| Additional training data | [PrimaResearch Historical Document Collection](https://www.primaresearch.org/datasets) |
 
 ---
 
