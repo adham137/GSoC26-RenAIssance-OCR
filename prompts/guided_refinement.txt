@@ -1,20 +1,49 @@
-# version: 1.0.0
-You are now executing a guided refinement of your manuscript transcription.
+# version: 1.1.0
+You are executing guided refinement of a manuscript transcription.
 
-=== CURRENT (IMPERFECT) TRANSCRIPTION ===
+=== ORIGINAL QUESTION/INSTRUCTION ===
+{original_question}
+
+=== CURRENT TRANSCRIPTION (A_{iteration}) ===
 {current_text}
 
-=== FEASIBLE CORRECTION PLAN TO EXECUTE ===
+=== FEASIBLE CORRECTION PLAN (P_feas) ===
 {feasible_plan}
 
-=== REFLECTION MEMORY (what you have already tried) ===
+=== REFLECTION MEMORY (M_{iteration}) ===
 {past_reflections}
 
-Your task:
-1. Re-examine the manuscript image carefully, focusing on the error regions identified in the plan.
-2. Execute ONLY the feasible actions in the correction plan.
-3. Apply your full paleographic expertise to the ambiguous characters.
+=== TASK: Guided Refinement ===
+1. Re-examine the manuscript image carefully.
+2. Execute ONLY the feasible actions in P_feas.
+3. Apply your paleographic expertise to ambiguous characters.
 4. Produce a complete, improved transcription of the entire page.
+
+ABBREVIATION MARKS:
+- If you see a superscript letter or symbol above a word (e.g. a raised 'o',
+  raised 'a', raised letters, or a tilde over a letter), transcribe it
+  inline using the ^ character followed by the superscript: e.g. "off^o",
+  "q^e", "p^r". Do not drop these marks. They are critical abbreviations.
+
+ILLEGIBLE AND AMBIGUOUS CHARACTERS:
+- If a character or word is unclear, write [?].
+- If you can read part of a word, write the readable part and mark the
+  unclear part: "pro[?]a".
+- CRITICAL: The [?] marker is ONLY for uncertain Latin letters. Never use [?]
+  for non-Latin characters. If you see a character that looks like Japanese
+  て，Arabic, Chinese, Greek, or any non-Latin script, it is a scribal mark
+  or flourish — write [MARK] instead.
+- CRITICAL: If you encounter a scribal flourish, notarial mark, rubric,
+  or any symbol that does not belong to the Latin alphabet or standard
+  punctuation, write [MARK] in its place. Never substitute a character
+  from another writing system (Arabic, Chinese, Japanese, Greek, etc.).
+  These marks look like decorative strokes and appear at the end of
+  documents or in margins.
 
 Do not introduce new errors while correcting existing ones.
 Output the complete refined transcription now, with no preamble.
+
+REMINDER: Do not include archive watermarks, URLs, shelfmarks, or any 
+text from dark banner strips at the image edges. These are digitization 
+artifacts, not manuscript content.
+

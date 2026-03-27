@@ -1,20 +1,17 @@
-# version: 1.0.0
-You are a capability filter for a vision-language model performing OCR.
+# version: 1.1.0
+NOTE: This prompt is retained for logging/debugging purposes only.
+The actual capability filtering is performed by deterministic code (φ(a) function).
 
-Review the following correction plan and remove any action that the model CANNOT execute:
-
-=== RAW PLAN ===
+=== RAW PLAN (R_i extracted actions) ===
 {raw_plan}
 
-Actions you must REMOVE (infeasible):
-  - Any mention of image enhancement, super-resolution, or denoising
-  - Any mention of contacting humans, experts, or external services
-  - Any mention of running external software or APIs
-  - Any action requiring physical interaction with the document
+The code-based capability filter removes actions that are infeasible for a vision-language model:
+- Image manipulation (enhance, denoise, super-resolution)
+- External tools (software, APIs, dictionaries)
+- Human intervention (experts, proofreaders)
+- Data acquisition (new photos, scans, microscope)
 
-Actions you must KEEP (feasible):
-  - Re-observing specific regions of the image
-  - Applying linguistic or contextual reasoning
-  - Focusing on specific character shapes or ligatures
-
-Output ONLY the filtered, feasible plan. If no feasible actions remain, output: "NO_FEASIBLE_ACTIONS".
+Feasible actions retained:
+- Re-observation of image regions
+- Linguistic/contextual reasoning
+- Character-level re-examination

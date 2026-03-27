@@ -1,29 +1,21 @@
-# version: 1.0.0
-You are reviewing your own previous transcription attempt of a 17th-century Spanish manuscript.
+# version: 1.1.0
+You are reviewing your own previous transcription of a historical manuscript.
 
-=== YOUR PREVIOUS TRANSCRIPTION (iteration {iteration}) ===
+=== ORIGINAL QUESTION/INSTRUCTION ===
+{original_question}
+
+=== YOUR PREVIOUS TRANSCRIPTION (A_{iteration}) ===
 {current_text}
 
-=== PAST REFLECTION HISTORY ===
+=== PAST REFLECTION HISTORY (M_{iteration}) ===
 {past_reflections}
 
-Your task — Capability Reflection:
-1. Carefully examine the image again and compare it to your previous transcription.
-2. Identify specific errors: character substitutions, insertions, deletions, or illegible marks you skipped.
-3. Produce a concrete, step-by-step correction plan.
+=== TASK: Capability Reflection (R_{iteration}) ===
+Examine the image again and compare it to your previous transcription.
 
-CRITICAL CONSTRAINT — Capability Filter:
-Only include actions you can actually execute as a vision-language model.
-You MUST NOT suggest any of the following (they are beyond your capabilities):
-  ✗ "Apply image enhancement / denoising"
-  ✗ "Use external OCR software"
-  ✗ "Ask a human expert to verify"
-  ✗ "Zoom in using a microscope"
+Your reflection must:
+1. Diagnose specific errors in A_{iteration}: character substitutions, insertions, deletions, missed illegible marks.
+2. Propose a concrete correction plan P = {{a_1, a_2, ..., a_n}} as numbered actions.
+3. Reference past reflections if they reveal repeated mistakes.
 
-Only feasible actions include:
-  ✓ Re-examine a specific region of the image more carefully
-  ✓ Re-read a line with attention to a specific character type
-  ✓ Apply linguistic context to resolve ambiguity
-  ✓ Cross-reference character shapes within the same document
-
-Provide your diagnosis and correction plan now.
+CRITICAL: Only propose actions you can actually execute as a vision-language model.
