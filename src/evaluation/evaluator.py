@@ -34,7 +34,7 @@ import re
 import string
 from pathlib import Path
 from typing import TYPE_CHECKING
-
+import unicodedata
 from src.models import EvaluationReport
 
 if TYPE_CHECKING:
@@ -69,13 +69,23 @@ class Evaluator:
     CER: 0.1333  WER: 0.5000
     """
 
+    _LIGATURES = {
+        "ﬁ": "fi",  # U+FB01
+        "ﬂ": "fl",  # U+FB02
+        "ﬃ": "ffi",  # U+FB03
+        "ﬄ": "ffl",  # U+FB04
+        "ﬀ": "ff",  # U+FB00
+        "ﬅ": "st",  # U+FB05
+        "ﬆ": "st",  # U+FB06
+    }
+
     def __init__(
         self,
-        output_dir : str | Path = "data/output_images/eval",
-        normalise  : bool       = True,
+        output_dir: str | Path = "data/output_images/eval",
+        normalise: bool = True,
     ) -> None:
         self.output_dir = Path(output_dir)
-        self.normalise  = normalise
+        self.normalise = normalise
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -84,10 +94,10 @@ class Evaluator:
 
     def evaluate(
         self,
-        page_id    : str,
-        ocr_text   : str,
-        gt_text    : str,
-        image_path : str | Path | None = None,
+        page_id: str,
+        ocr_text: str,
+        gt_text: str,
+        image_path: str | Path | None = None,
     ) -> EvaluationReport:
         """
         Full evaluation pass: metrics + confusion matrix + (optional) heatmap.
@@ -111,7 +121,7 @@ class Evaluator:
         """
         if self.normalise:
             ocr_text = self._normalise_text(ocr_text)
-            gt_text  = self._normalise_text(gt_text)
+            gt_text = self._normalise_text(gt_text)
 
         cer = self.compute_cer(ocr_text, gt_text)
         wer = self.compute_wer(ocr_text, gt_text)
@@ -130,12 +140,12 @@ class Evaluator:
         heatmap_path: str | None = None
 
         return EvaluationReport(
-            page_id            = page_id,
-            cer_score          = cer,
-            wer_score          = wer,
-            frequent_errors    = frequent_errors,
-            error_heatmap_path = heatmap_path,
-            char_diff_html     = char_diff_html,
+            page_id=page_id,
+            cer_score=cer,
+            wer_score=wer,
+            frequent_errors=frequent_errors,
+            error_heatmap_path=heatmap_path,
+            char_diff_html=char_diff_html,
         )
 
     # ------------------------------------------------------------------
@@ -164,8 +174,7 @@ class Evaluator:
             from jiwer import cer as jiwer_cer
         except ImportError as exc:
             raise ImportError(
-                "jiwer is required for CER computation. "
-                "Install with: pip install jiwer"
+                "jiwer is required for CER computation. Install with: pip install jiwer"
             ) from exc
 
         # Normalize both texts before comparison
@@ -204,8 +213,7 @@ class Evaluator:
             from jiwer import wer as jiwer_wer
         except ImportError as exc:
             raise ImportError(
-                "jiwer is required for WER computation. "
-                "Install with: pip install jiwer"
+                "jiwer is required for WER computation. Install with: pip install jiwer"
             ) from exc
 
         # Normalize both texts before comparison
@@ -229,8 +237,8 @@ class Evaluator:
 
     def build_confusion_matrix(
         self,
-        hypothesis : str,
-        reference  : str,
+        hypothesis: str,
+        reference: str,
     ) -> dict[str, dict[str, int]]:
         """
         Build a character-level confusion matrix from Levenshtein edit ops.
@@ -270,7 +278,7 @@ class Evaluator:
         # op_type is one of: 'insert', 'delete', 'replace'
         for op, hyp_pos, ref_pos in Levenshtein.editops(hypothesis, reference):
             if op == "replace":
-                gt_char   = reference[ref_pos]
+                gt_char = reference[ref_pos]
                 pred_char = hypothesis[hyp_pos]
                 if gt_char not in matrix:
                     matrix[gt_char] = {}
@@ -284,10 +292,10 @@ class Evaluator:
 
     def generate_error_heatmap(
         self,
-        page_id    : str,
-        ocr_text   : str,
-        gt_text    : str,
-        image_path : Path,
+        page_id: str,
+        ocr_text: str,
+        gt_text: str,
+        image_path: Path,
     ) -> str:
         """
         Generate a visual error overlay on the manuscript image.
@@ -332,15 +340,15 @@ class Evaluator:
 
         import difflib
 
-        img  = Image.open(image_path).convert("RGBA")
+        img = Image.open(image_path).convert("RGBA")
         w, h = img.size
 
         # Overlay layer for semi-transparent highlights
         overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        draw    = ImageDraw.Draw(overlay)
+        draw = ImageDraw.Draw(overlay)
 
         ocr_words = ocr_text.split()
-        gt_words  = gt_text.split()
+        gt_words = gt_text.split()
 
         if not gt_words:
             logger.warning("Empty GT for heatmap — returning plain image copy.")
@@ -349,8 +357,8 @@ class Evaluator:
             return str(out_path)
 
         # Find the word-level error positions via SequenceMatcher
-        sm       = difflib.SequenceMatcher(None, ocr_words, gt_words, autojunk=False)
-        opcodes  = sm.get_opcodes()
+        sm = difflib.SequenceMatcher(None, ocr_words, gt_words, autojunk=False)
+        opcodes = sm.get_opcodes()
 
         # Collect indices of OCR words that differ from GT
         error_word_indices: set[int] = set()
@@ -360,28 +368,32 @@ class Evaluator:
                     error_word_indices.add(idx)
 
         if not error_word_indices:
-            logger.info("No word-level errors found for page '%s' — heatmap is clean.", page_id)
+            logger.info(
+                "No word-level errors found for page '%s' — heatmap is clean.", page_id
+            )
         else:
             # Approximate word positions by distributing evenly across page width.
             # Real bounding-box support requires a layout-aware OCR pass (future work).
-            n_words    = len(ocr_words)
-            line_h     = max(20, h // max(n_words // 10, 1))
-            word_w     = max(60, w // 20)
+            n_words = len(ocr_words)
+            line_h = max(20, h // max(n_words // 10, 1))
+            word_w = max(60, w // 20)
             words_per_row = max(1, w // (word_w + 8))
 
             for err_idx in error_word_indices:
                 row = err_idx // words_per_row
-                col = err_idx %  words_per_row
-                x0  = col * (word_w + 8)
-                y0  = row * (line_h + 4)
-                x1  = min(x0 + word_w, w - 1)
-                y1  = min(y0 + line_h, h - 1)
+                col = err_idx % words_per_row
+                x0 = col * (word_w + 8)
+                y0 = row * (line_h + 4)
+                x1 = min(x0 + word_w, w - 1)
+                y1 = min(y0 + line_h, h - 1)
                 # Semi-transparent red highlight
                 draw.rectangle([x0, y0, x1, y1], fill=(220, 30, 30, 100))
 
             logger.info(
                 "Heatmap for '%s': %d/%d words flagged as errors.",
-                page_id, len(error_word_indices), len(ocr_words),
+                page_id,
+                len(error_word_indices),
+                len(ocr_words),
             )
 
         # Composite and save
@@ -394,20 +406,21 @@ class Evaluator:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
     @staticmethod
     def _normalise_text(text: str) -> str:
         """
         Normalizes text for accurate OCR evaluation, matching standard CER calculators.
-
         Steps applied:
-            1. Convert to lowercase.
-            2. Remove all punctuation (keeps only alphanumeric and spaces).
-            3. Collapse all whitespace (newlines, tabs, multiple spaces) into a single space.
-            4. Strip leading and trailing whitespace.
-
-        This ensures that differences in case, punctuation, and whitespace from PDF
-        layout parsing do not artificially inflate CER/WER scores.
+            0. Expand Unicode ligatures (ﬁ → fi, ﬂ → fl, etc.) before any other step.
+            1. Strip superscript notation (^o, ^a, ^e, etc.) for evaluation purposes.
+            2. Convert to lowercase.
+            3. Strip combining accent marks, preserving ñ.
+            Mirrors training normalization Rule 5 exactly so that the model's
+            learned (accent-free) output is fairly compared against ground truth.
+            4. Remove all punctuation, including Unicode punctuation (e.g. … U+2026)
+            not covered by the original ASCII-only string.punctuation approach.
+            5. Collapse all whitespace (newlines, tabs, multiple spaces) into a single space.
+            6. Strip leading and trailing whitespace.
 
         Parameters
         ----------
@@ -417,25 +430,70 @@ class Evaluator:
         Returns
         -------
         str
-            Normalised text (lowercase, no punctuation, collapsed whitespace).
+            Normalised text.
 
         Examples
         --------
-        >>> Evaluator._normalise_text("Hello\\nWorld")
-        'hello world'
-        >>> Evaluator._normalise_text("Hello, World!")
-        'hello world'
-        >>> Evaluator._normalise_text("Hello World ")
+        >>> _normalise_text("conﬁrmar")
+        'confirmar'
+        >>> _normalise_text("off^o")
+        'off'
+        >>> _normalise_text("Milán")
+        'milan'
+        >>> _normalise_text("España")
+        'espana'
+        >>> _normalise_text("mañana")
+        'mañana'
+        >>> _normalise_text("…impunitatem")
+        'impunitatem'
+        >>> _normalise_text("Hello\\nWorld")
         'hello world'
         """
         if not text:
             return ""
-        # 1. Lowercase
+
+        # Step 0 — expand Unicode ligatures before any character-level processing
+        for ligature, expansion in Evaluator._LIGATURES.items():
+            text = text.replace(ligature, expansion)
+
+        # PP-3: Strip superscript notation for evaluation purposes
+        # This removes ^ followed by 1-2 letters (including accented vowels)
+        # so that "off^o" evaluates the same as "off"
+        text = re.sub(r"\^[a-zA-Záéíóú]{1,2}", "", text)
+
+        # Step 1 — lowercase
         text = text.lower()
-        # 2. Remove punctuation
-        text = text.translate(str.maketrans('', '', string.punctuation))
-        # 3. Collapse whitespace
-        normalized = re.sub(r'\s+', ' ', text)
+
+        # Step 2 — strip combining accent marks, preserve ñ
+        # Mirrors training normalization Rule 5 exactly.
+        # After lowercasing we only encounter lowercase 'n', so the uppercase
+        # branch from the training function is intentionally omitted.
+        nfd = unicodedata.normalize("NFD", text)
+        out, i = [], 0
+        while i < len(nfd):
+            c = nfd[i]
+            if (
+                c == "n" and i + 1 < len(nfd) and nfd[i + 1] == "\u0303"
+            ):  # combining tilde → ñ
+                out.append(c)
+                out.append("\u0303")
+                i += 2
+            elif unicodedata.category(c) == "Mn":  # any other combining mark
+                i += 1  # drop it
+            else:
+                out.append(c)
+                i += 1
+        text = unicodedata.normalize("NFC", "".join(out))
+
+        # Step 3 — remove all punctuation, Unicode-aware
+        # Replaces the original str.translate(string.punctuation) which only
+        # covered 32 ASCII punctuation characters and missed e.g. … (U+2026).
+        # [^\w\s] removes every character that is not a Unicode word character
+        # or whitespace. ñ survives because \w with re.UNICODE matches it.
+        text = re.sub(r"[^\w\s]", "", text, flags=re.UNICODE)
+
+        # Step 4 — collapse whitespace
+        normalized = re.sub(r"\s+", " ", text)
         return normalized.strip()
 
     def generate_semantic_diff_html(self, hypothesis: str, reference: str) -> str:
@@ -501,6 +559,6 @@ class Evaluator:
                 )
             elif op == dmp.DIFF_EQUAL:
                 # Leave matching text as normal
-                html_output.append(f'<span>{text}</span>')
+                html_output.append(f"<span>{text}</span>")
 
         return "".join(html_output)
