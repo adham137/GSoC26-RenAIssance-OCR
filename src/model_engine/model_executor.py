@@ -99,7 +99,7 @@ class ModelExecutor:
     # A 1536px max dimension yields ~2000-2500 tokens for typical manuscript pages,
     # preventing KV cache OOM errors while preserving glyph detail.
     # Qwen-VL vision encoder creates ~4 tokens per 14x14 patch.
-    MAX_IMAGE_DIM = 2048
+    MAX_IMAGE_DIM = 1800
 
     # Heuristic for transcription output length: output_tokens ≈ input_chars × multiplier
     TRANSCRIPTION_HEURISTIC_MULTIPLIER = (
@@ -317,19 +317,17 @@ class ModelExecutor:
         correction plan (Capability Reflection, §3.2).
 
         Adapter should be **OFF** when this is called.
-        Optimized: Uses text-only inference to prevent redundant image re-encoding.
+        CRITICAL: This is a VISION call — the image MUST be included.
+        Per Algorithm 1, every reflection call receives: I, Q, A_{i-1}, M_i
         """
         self._assert_loaded("diagnose_errors")
         logger.debug("diagnose_errors called (adapter=%s)", self.adapter_state)
 
-        # Ensure the current text is explicitly passed to the text-only model
-        full_text_prompt = (
-            f"{reflection_prompt}\n\n[CURRENT TRANSCRIPTION]\n{current_text}"
-        )
+        # Build the full reflection prompt with current text
+        full_prompt = f"{reflection_prompt}\n\n[CURRENT TRANSCRIPTION]\n{current_text}"
 
-        # Use text-only inference for massive speedup — no need to re-encode
-        # the high-resolution image during the reflection phase
-        return self._run_text_inference(prompt=full_text_prompt)
+        # CRITICAL: Use VISION inference — image must be included per specification
+        return self._run_vision_inference(page.image_path, full_prompt)
 
     def filter_plan(
         self,
@@ -340,12 +338,191 @@ class ModelExecutor:
         Apply the capability-filter to remove infeasible actions from
         the raw correction plan (φ(a) filter from §3.2).
 
+        CRITICAL: This is NOT a model call. This is deterministic CODE.
+        Per Algorithm 1, capability filtering is a code step that applies
+        the feasibility function φ(a) to each action in the extracted plan.
+
         Adapter should be **OFF** when this is called.
-        Text-only — no image needed for filtering.
         """
         self._assert_loaded("filter_plan")
         logger.debug("filter_plan called (adapter=%s)", self.adapter_state)
-        return self._run_text_inference(filter_prompt)
+
+        # Deterministic capability filtering — no model call
+        # Extract the action plan from the reflection text
+        actions = self._extract_actions_from_plan(raw_plan)
+
+        # Apply feasibility function φ(a) to each action
+        feasible_actions = []
+        for action in actions:
+            if self._is_feasible(action):
+                feasible_actions.append(action)
+
+        # Return the filtered feasible plan
+        if feasible_actions:
+            return "\n".join(feasible_actions)
+        else:
+            return "NO_FEASIBLE_ACTIONS"
+
+    def _extract_actions_from_plan(self, plan_text: str) -> list[str]:
+        """
+        Extract individual actions from a raw correction plan text.
+
+        Parses numbered lists, bullet points, and line-separated actions.
+
+        Parameters
+        ----------
+        plan_text : str
+            The raw correction plan text from the reflection.
+
+        Returns
+        -------
+        list[str]
+            List of individual action strings.
+        """
+        import re
+
+        actions = []
+        lines = plan_text.strip().split("\n")
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Remove numbering/bullets: "1.", "2.", "-", "•", "a)", etc.
+            cleaned = re.sub(
+                r"^(?:\d+[\.\)]\s*|[-•*]\s*|[a-z][\.\)]\s*)",
+                "",
+                line,
+                flags=re.IGNORECASE,
+            )
+            cleaned = cleaned.strip()
+
+            if cleaned and len(cleaned) > 5:  # Filter out very short lines
+                actions.append(cleaned)
+
+        return actions
+
+    def _is_feasible(self, action: str) -> bool:
+        """
+        Apply the feasibility function φ(a) to determine if an action
+        is executable by a vision-language model.
+
+        Per specification §3.2:
+        - φ(a) = 1 if action is text-based reasoning / re-observation
+        - φ(a) = 0 if action requires external tools, image manipulation,
+          human intervention, or data acquisition
+
+        Parameters
+        ----------
+        action : str
+            The action string to evaluate.
+
+        Returns
+        -------
+        bool
+            True if the action is feasible, False otherwise.
+        """
+        action_lower = action.lower()
+
+        # Infeasible actions (φ(a) = 0)
+        infeasible_keywords = [
+            # Image manipulation
+            "enhance",
+            "denoise",
+            "super-resolution",
+            "sharpen",
+            "deblur",
+            "increase contrast",
+            "brightness adjustment",
+            "image processing",
+            "transform",
+            "resize",
+            "crop",
+            "rotate",
+            # External tools / software
+            "external ocr",
+            "software",
+            "api",
+            "tool",
+            "library",
+            "dictionary",
+            "spell-check",
+            "grammar check",
+            # Human intervention
+            "human",
+            "expert",
+            "proofreader",
+            "ask",
+            "consult",
+            "verify with",
+            # Data acquisition
+            "new photo",
+            "take a picture",
+            "scan",
+            "rephotograph",
+            "microscope",
+            "zoom in",
+            "magnify",
+            # Physical interaction
+            "physical",
+            "touch",
+            "handle",
+            "preserve",
+        ]
+
+        for keyword in infeasible_keywords:
+            if keyword in action_lower:
+                return False
+
+        # Feasible actions (φ(a) = 1) — text-based reasoning and re-observation
+        feasible_indicators = [
+            "re-read",
+            "re-examine",
+            "re-observe",
+            "look again",
+            "check again",
+            "focus on",
+            "attention on",
+            "carefully",
+            "compare",
+            "linguistic",
+            "contextual",
+            "paleographic",
+            "character shape",
+            "ligature",
+            "abbreviation",
+            "scribal",
+            "spelling",
+            "ambiguous",
+            "uncertain",
+            "unclear",
+            "faded",
+            "line",
+            "word",
+            "letter",
+            "character",
+            "glyph",
+            "region",
+            "area",
+            "section",
+            "part",
+        ]
+
+        for indicator in feasible_indicators:
+            if indicator in action_lower:
+                return True
+
+        # Default: if action doesn't clearly indicate infeasible operations
+        # and mentions text/reading/observation, assume feasible
+        if any(
+            word in action_lower
+            for word in ["read", "text", "write", "transcribe", "interpret"]
+        ):
+            return True
+
+        # Conservative default: if unclear, mark as infeasible
+        return False
 
     def guided_refinement(
         self,

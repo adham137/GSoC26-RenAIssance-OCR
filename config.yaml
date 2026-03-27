@@ -1,0 +1,56 @@
+# ============================================================================
+# Agentic OCR Framework — Backend Configuration
+# ============================================================================
+# Switch between 'local' and 'openrouter' backends.
+#
+# For OpenRouter: Do NOT put the actual API key here — use env var OPENROUTER_API_KEY
+# The ${OPENROUTER_API_KEY} syntax will be resolved from the environment at runtime.
+# ============================================================================
+
+# Backend selection: 'local' or 'openrouter'
+backend: openrouter
+
+# Local model configuration (used when backend: local)
+local:
+  model_path: models/Qwen3.5-0.8B
+  adapter_path: null          # set to adapter path when available (e.g., models/lora_manuscript_v1)
+  device: cuda
+  load_in_4bit: false
+
+# OpenRouter API configuration (used when backend: openrouter)
+openrouter:
+  # API key is read from environment variable OPENROUTER_API_KEY
+  api_key: ${OPENROUTER_API_KEY}
+
+
+  model: google/gemini-2.5-flash-lite
+
+  # Generation parameters
+  max_tokens: 4096
+  temperature: 0.1            # Low for deterministic OCR
+
+  # Network settings
+  timeout_seconds: 60
+  max_retries: 3
+  retry_delay_seconds: 2.0
+
+  # Optional headers for OpenRouter API
+  # site_url: https://github.com/humanai-renaissance
+  # app_name: Agentic-OCR-Framework
+
+# ============================================================================
+# Document Category-Specific Configuration
+# ============================================================================
+# These settings override the global openrouter settings for specific
+# document categories. Use this to tune behavior based on document type.
+# ============================================================================
+
+category_overrides:
+  handwriting:
+    # Handwriting documents require only 1 ReAct iteration to avoid
+    # over-correction and hallucination from multiple refinement passes.
+    max_iterations: 1
+  
+  print:
+    # Printed documents can benefit from multiple refinement iterations.
+    max_iterations: 3

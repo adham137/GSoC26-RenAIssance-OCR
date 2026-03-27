@@ -57,7 +57,7 @@ from src.models import (
 
 if TYPE_CHECKING:
     from src.logger.trace_logger import TraceLogger
-    from src.model_engine.model_executor import ModelExecutor
+    from src.model_engine.base_backend import BaseModelBackend
     from src.prompt_manager.prompt_registry import PromptRegistry
 
 logger = logging.getLogger(__name__)
@@ -69,8 +69,9 @@ class AgenticOrchestrator:
 
     Parameters
     ----------
-    executor : ModelExecutor
+    executor : BaseModelBackend
         Pre-loaded inference engine (``load_model()`` already called).
+        Can be LocalModelBackend or OpenRouterBackend.
     registry : PromptRegistry
         Prompt template store.
     trace_logger : TraceLogger
@@ -95,15 +96,15 @@ class AgenticOrchestrator:
 
     def __init__(
         self,
-        executor        : "ModelExecutor",
-        registry        : "PromptRegistry",
-        trace_logger    : "TraceLogger",
-        max_iterations  : int = 3,
-        execution_mode  : ExecutionMode = ExecutionMode.ADAPTER_REACT,
+        executor: "BaseModelBackend",
+        registry: "PromptRegistry",
+        trace_logger: "TraceLogger",
+        max_iterations: int = 3,
+        execution_mode: ExecutionMode = ExecutionMode.ADAPTER_REACT,
     ) -> None:
-        self.executor       = executor
-        self.registry       = registry
-        self.trace_logger   = trace_logger
+        self.executor = executor
+        self.registry = registry
+        self.trace_logger = trace_logger
         self.max_iterations = max_iterations
         self.execution_mode = execution_mode
 
@@ -128,7 +129,11 @@ class AgenticOrchestrator:
         OCRResult
             Final result with transcription, mode, and full agentic trace.
         """
-        logger.info("Running orchestrator on page '%s' (mode=%s)", page.page_id, self.execution_mode)
+        logger.info(
+            "Running orchestrator on page '%s' (mode=%s)",
+            page.page_id,
+            self.execution_mode,
+        )
 
         if self.execution_mode == ExecutionMode.BASE_ONE_SHOT:
             return self._run_one_shot(page, use_adapter=False)
@@ -161,7 +166,7 @@ class AgenticOrchestrator:
         OCRResult
             Result with an empty ``agentic_trace``.
         """
-        if use_adapter:
+        if use_adapter and self.executor.is_adapter_available():
             self.executor.set_adapter()
 
         prompt = self.registry.render("initial_extraction")
@@ -169,11 +174,11 @@ class AgenticOrchestrator:
         text = self.executor._parse_transcription(text)
 
         trace_entry = AgenticTrace(
-            iteration     = 0,
-            step_type     = "INIT",
-            adapter_state = self.executor.adapter_state,
-            action        = "extract_text",
-            observation   = text,
+            iteration=0,
+            step_type="INIT",
+            adapter_state=self.executor.adapter_state,
+            action="extract_text",
+            observation=text,
         )
         self.trace_logger.record(trace_entry)
 
@@ -197,6 +202,15 @@ class AgenticOrchestrator:
             1. adapter ON  → extract / refine
             2. adapter OFF → reflect / plan / filter
 
+        CRITICAL: Per Algorithm 1, the loop runs EXACTLY T=3 times.
+        No early termination based on stagnation or empty feasible plan.
+
+        Memory handling:
+        - M_1 = ∅ (empty at start)
+        - Reflection R_i receives: I, Q, A_{i-1}, M_i
+        - Refinement A_i receives: I, Q, A_{i-1}, P_feas, M_i ∪ {R_i}
+        - After iteration: M_{i+1} = M_i ∪ {R_i}
+
         Parameters
         ----------
         page : DocumentPage
@@ -209,131 +223,127 @@ class AgenticOrchestrator:
         OCRResult
             Result containing the final refined text and the full trace.
         """
-        memory : AgenticMemory = AgenticMemory()
-        traces : list[AgenticTrace] = []
+        memory: AgenticMemory = AgenticMemory()
+        traces: list[AgenticTrace] = []
 
-        # ── Step 0: Initial extraction ──────────────────────────────────
-        if use_adapter:
+        # ── Step 0: Initial extraction (A_0) ──────────────────────────────
+        if use_adapter and self.executor.is_adapter_available():
             self.executor.set_adapter()  # adapter ON for initial read
 
         init_prompt = self.registry.render("initial_extraction")
         current_text = self.executor.extract_text(page, init_prompt)
 
         init_trace = AgenticTrace(
-            iteration     = 0,
-            step_type     = "INIT",
-            adapter_state = self.executor.adapter_state,
-            action        = "extract_text",
-            observation   = current_text,
+            iteration=0,
+            step_type="INIT",
+            adapter_state=self.executor.adapter_state,
+            action="extract_text",
+            observation=current_text,
         )
         traces.append(init_trace)
         self.trace_logger.record(init_trace)
 
-        # ── Reflection loop ─────────────────────────────────────────────
+        # Memory state after Step 0: M_1 = ∅ (empty)
+        # current_text holds A_0
+
+        # ── Reflection loop: i = 1 TO T ──────────────────────────────────
         for i in range(1, self.max_iterations + 1):
             logger.debug("Starting iteration %d / %d", i, self.max_iterations)
 
+            # At start of iteration i:
+            # - current_text = A_{i-1}
+            # - memory.past_reflections = M_i = {R_1, ..., R_{i-1}}
+
             # ── Phase A: Capability Reflection — adapter OFF ─────────────
-            if use_adapter:
+            if use_adapter and self.executor.is_adapter_available():
                 self.executor.disable_adapter()  # CRITICAL: adapter OFF for planning
 
+            # Reflection receives: I, Q, A_{i-1}, M_i
             reflect_prompt = self.registry.render(
                 "capability_reflection",
-                current_text     = current_text,
-                past_reflections = "\n---\n".join(memory.past_reflections),
-                iteration        = str(i),
+                original_question="Transcribe the historical text in the provided image exactly as written.",
+                current_text=current_text,
+                past_reflections="\n---\n".join(memory.past_reflections),
+                iteration=str(i),
             )
             raw_plan = self.executor.diagnose_errors(page, current_text, reflect_prompt)
 
             reflect_trace = AgenticTrace(
-                iteration       = i,
-                step_type       = "REFLECT",
-                adapter_state   = self.executor.adapter_state,
-                action          = "diagnose_errors",
-                thought         = reflect_prompt,
-                observation     = raw_plan,
-                memory_snapshot = list(memory.past_reflections),
+                iteration=i,
+                step_type="REFLECT",
+                adapter_state=self.executor.adapter_state,
+                action="diagnose_errors",
+                thought=reflect_prompt,
+                observation=raw_plan,
+                memory_snapshot=list(memory.past_reflections),
             )
             traces.append(reflect_trace)
             self.trace_logger.record(reflect_trace)
 
-            # ── Phase B: Filter plan — adapter stays OFF ──────────────────
-            filter_prompt  = self.registry.render(
+            # ── Phase B: Capability Filtering — adapter stays OFF ─────────
+            # This is deterministic CODE, not a model call
+            # Extracts plan P from R_i and filters to P_feas using φ(a)
+            filter_prompt = self.registry.render(
                 "capability_filter",
-                raw_plan = raw_plan,
+                raw_plan=raw_plan,
             )
-            feasible_plan  = self.executor.filter_plan(raw_plan, filter_prompt)
+            feasible_plan = self.executor.filter_plan(raw_plan, filter_prompt)
 
             filter_trace = AgenticTrace(
-                iteration     = i,
-                step_type     = "FILTER",
-                adapter_state = self.executor.adapter_state,
-                action        = "filter_plan",
-                thought       = f"Filtering infeasible actions from plan (iteration {i})",
-                observation   = feasible_plan,
+                iteration=i,
+                step_type="FILTER",
+                adapter_state=self.executor.adapter_state,
+                action="filter_plan",
+                thought=f"Filtering infeasible actions from plan (iteration {i})",
+                observation=feasible_plan,
             )
             traces.append(filter_trace)
             self.trace_logger.record(filter_trace)
 
-            # ── Phase C: Memory Reflection — update M_i ───────────────────
-            memory_prompt = self.registry.render(
-                "memory_reflection",
-                current_text     = current_text,
-                feasible_plan    = feasible_plan,
-                past_reflections = "\n---\n".join(memory.past_reflections),
+            # ── Phase C: Update memory to M_i ∪ {R_i} BEFORE refinement ───
+            # CRITICAL: Refinement must receive M_{i+1} = M_i ∪ {R_i}
+            # Record the current reflection R_i (raw_plan) into memory
+            memory.record_iteration(
+                transcription=current_text,  # Will be overwritten by refined text
+                reflection=raw_plan,  # R_i added to M_i → M_{i+1}
+                plan=feasible_plan,  # P_feas for this iteration
             )
 
             # ── Phase D: Guided Refinement — adapter ON ───────────────────
-            if use_adapter:
+            if use_adapter and self.executor.is_adapter_available():
                 self.executor.set_adapter()  # CRITICAL: adapter back ON for refining
 
+            # Refinement receives: I, Q, A_{i-1}, P_feas, M_i ∪ {R_i}
             refine_prompt = self.registry.render(
                 "guided_refinement",
-                current_text     = current_text,
-                feasible_plan    = feasible_plan,
-                past_reflections = "\n---\n".join(memory.past_reflections),
+                original_question="Transcribe the historical text in the provided image exactly as written.",
+                current_text=current_text,
+                feasible_plan=feasible_plan,
+                past_reflections="\n---\n".join(memory.past_reflections),
             )
-            refined_text = self.executor.guided_refinement(page, feasible_plan, refine_prompt)
+            refined_text = self.executor.guided_refinement(
+                page, feasible_plan, refine_prompt
+            )
 
             refine_trace = AgenticTrace(
-                iteration       = i,
-                step_type       = "REFINE",
-                adapter_state   = self.executor.adapter_state,
-                action          = "guided_refinement",
-                thought         = refine_prompt,
-                observation     = refined_text,
-                memory_snapshot = list(memory.past_reflections),
+                iteration=i,
+                step_type="REFINE",
+                adapter_state=self.executor.adapter_state,
+                action="guided_refinement",
+                thought=refine_prompt,
+                observation=refined_text,
+                memory_snapshot=list(memory.past_reflections),
             )
             traces.append(refine_trace)
             self.trace_logger.record(refine_trace)
 
-            # ── Update memory with this iteration's results ───────────────
-            memory.record_iteration(
-                transcription = refined_text,
-                reflection    = raw_plan,
-                plan          = feasible_plan,
-            )
+            # ── Update current answer: A_i becomes A_{i-1} for next iter ──
             current_text = refined_text
 
-            # ── Termination checks ────────────────────────────────────────
-            if memory.has_stagnated():
-                logger.info("Refinement stagnated at iteration %d — terminating loop.", i)
-                term_trace = AgenticTrace(
-                    iteration     = i,
-                    step_type     = "TERMINATE",
-                    adapter_state = self.executor.adapter_state,
-                    action        = "stagnation_check",
-                    thought       = "Consecutive identical outputs detected.",
-                    observation   = "Loop terminated early due to stagnation.",
-                )
-                traces.append(term_trace)
-                self.trace_logger.record(term_trace)
-                break
+            # Memory state after iteration i: M_{i+1} = {R_1, ..., R_i}
+            # Loop continues to i+1
 
-            if not feasible_plan.strip():
-                logger.info("Empty feasible plan at iteration %d — terminating loop.", i)
-                break
-
+        # ── After exactly T=3 iterations, return A_T ─────────────────────
         # Parse final transcription to remove any preamble/thinking
         current_text = self.executor._parse_transcription(current_text)
 
