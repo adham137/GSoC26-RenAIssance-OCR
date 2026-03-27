@@ -1,232 +1,89 @@
 # 📜 Agentic OCR Framework
 
-**HumanAI RenAIssance — GSoC Evaluation Submission**
+<p align="center">
+  <img src="Images/ahpg-gpah au61 2 - 1606.png" alt="Pipeline UI" width="100%"/>
+</p>
 
-> *A modular, research-grade OCR pipeline for extracting text from degraded
-> 17th-century Spanish manuscripts via iterative self-correction with
-> Capability Reflection and Memory Reflection.*
+<p align="center">
+  <strong>HumanAI RenAIssance — GSoC 2026 Evaluation Submission</strong><br/>
+  <em>Iterative self-correction pipeline for 17th-century Spanish manuscripts<br/>
+  via Capability Reflection & Memory Reflection</em>
+</p>
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B.svg)](https://streamlit.io/)
-[![Framework: OCR-Agent](https://img.shields.io/badge/framework-OCR--Agent-orange.svg)](https://arxiv.org/abs/2602.21053)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+<p align="center">
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python"/></a>
+  <a href="https://streamlit.io/"><img src="https://img.shields.io/badge/UI-Streamlit-FF4B4B.svg" alt="Streamlit"/></a>
+  <a href="https://arxiv.org/abs/2602.21053"><img src="https://img.shields.io/badge/framework-OCR--Agent-orange.svg" alt="OCR-Agent"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License"/></a>
+</p>
+
+---
+
+## Results
+
+Evaluated on all 5 handwritten test documents from the HumanAI RenAIssance GSoC 2026 dataset using `Base_ReAct` mode (no fine-tuned adapter), average **CER: 22.19%**.
+
+| Document | Period | CER | WER |
+|---|---|---|---|
+| ahpg-gpah au61 2 – 1606 | 1606 | **13.58%** | 43.61% |
+| pt3279 146 342 – 1857 | 1857 | **15.82%** | 50.00% |
+| pleito entre el marqués de viana | 17th c. | **22.25%** | 56.56% |
+| es 28079 ahn inquisición1667exp 12 – 1640 | 1640 | **23.59%** | 61.90% |
+| ahpg-gpah 1 1716a 35 – 1744 | 1744 | **35.69%** | 82.54% |
+| **Average** | | **22.19%** | **58.92%** |
+
+> CER is computed after text normalisation (lowercase, accent stripping preserving ñ, Unicode punctuation removal, ligature expansion). See `src/evaluation/evaluator.py`.
 
 ---
 
 ## Abstract
 
-This project implements the **OCR-Agent** framework
-([arXiv:2602.21053](https://arxiv.org/abs/2602.21053)) as a production-grade,
-modular Python pipeline. The system uses a Qwen2.5-VL Vision-Language Model
-augmented with domain-specific LoRA adapters to transcribe highly degraded
-historical manuscripts. Its core innovation is a structured ReAct loop with two
-complementary self-correction mechanisms:
+This project implements the **OCR-Agent** framework ([arXiv:2602.21053](https://arxiv.org/abs/2602.21053)) as a production-grade, modular Python pipeline for transcribing highly degraded historical manuscripts. The VLM operates at every stage of the pipeline — initial extraction, reflection, capability filtering, and guided refinement — satisfying the requirement that the model is used throughout the process, not as a late-stage post-processing step.
 
-- **Capability Reflection** — The model diagnoses its own transcription errors,
-  generates a correction plan, then filters out any actions beyond its executable
-  scope (e.g., "apply image enhancement"), preventing *capability hallucination*.
-- **Memory Reflection** — The model maintains a chronological ledger of past
-  reflection attempts, ensuring each iteration explores new strategies rather than
-  repeating previously failed corrections.
+Its two core self-correction mechanisms are:
 
-On the OCRBench v2 benchmark, this approach outperforms the open-source
-state-of-the-art InternVL3-8B by **+2.0** on English and **+1.2** on Chinese
-subsets without any additional training.
+- **Capability Reflection** — The model diagnoses its own transcription errors, generates a correction plan, then filters out any actions beyond its executable scope (e.g. "apply image enhancement", "consult a human expert"), preventing *capability hallucination*.
+- **Memory Reflection** — The model maintains a chronological ledger of all past reflection attempts across iterations, ensuring each refinement step explores new strategies rather than repeating previously failed corrections.
 
 ---
 
 ## System Architecture
 
-```mermaid
-flowchart TD
-    A[📄 Raw PDF] --> B[PDFHandler\nsrc/ingestion]
-    B --> C[DocumentPage\nlist of pages]
-
-    C --> D{Execution\nMode?}
-
-    D -->|Base/Adapter\nOne-Shot| E[ModelExecutor\nextract_text\nAdapter ON]
-    D -->|Base/Adapter\nReAct| F[AgenticOrchestrator\nsrc/orchestrator]
-
-    subgraph ReAct Loop ["🔄 ReAct Loop  (max_iterations = 3)"]
-        F --> G[Initial Extraction\nModelExecutor.extract_text\n🟢 Adapter ON]
-        G --> H[Capability Reflection\nModelExecutor.diagnose_errors\n🔴 Adapter OFF]
-        H --> I[Plan Filtering — φ a\nModelExecutor.filter_plan\n🔴 Adapter OFF]
-        I --> J[Memory Reflection\nAgenticMemory.record_iteration]
-        J --> K[Guided Refinement\nModelExecutor.guided_refinement\n🟢 Adapter ON]
-        K --> L{Stagnated\nor max\niters?}
-        L -->|No| H
-        L -->|Yes| M[OCRResult]
-    end
-
-    E --> M
-    M --> N[Evaluator\nsrc/evaluation]
-    N --> O[EvaluationReport\nCER · WER · Heatmap]
-
-    subgraph Support Modules
-        P[PromptRegistry\nsrc/prompt_manager\nLoads prompts/*.txt]
-        Q[TraceLogger\nsrc/logger\nJSONL structured logs]
-    end
-
-    F -.->|renders prompts| P
-    F -.->|records every step| Q
-    Q -.->|displays trace| R[Streamlit UI\nui/app.py]
-    M -.->|final result| R
-
-    style ReAct Loop fill:#f0f7ff,stroke:#4a90d9
-    style Support Modules fill:#f5f5f5,stroke:#999
-```
-
----
-
-## Installation
-
-### Prerequisites
-
-- Python 3.10 or higher
-- CUDA 12.x with compatible GPU (recommended: ≥ 16 GB VRAM for 4-bit mode)
-- `conda` (recommended) or `venv`
-
-### Step 1 — Clone the Repository
-
-```bash
-git clone https://github.com/your-org/agentic-ocr-framework.git
-cd agentic-ocr-framework
-```
-
-### Step 2 — Create Environment
-
-**Using conda (recommended):**
-
-```bash
-conda create -n ocr-agent python=3.10 -y
-conda activate ocr-agent
-```
-
-**Using venv:**
-
-```bash
-python -m venv .venv
-source .venv/bin/activate   # Linux/macOS
-.venv\Scripts\activate      # Windows
-```
-
-### Step 3 — Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-> **GPU Note:** `bitsandbytes` requires CUDA. If you see CUDA errors, ensure your
-> `torch` and CUDA versions are compatible:
-> ```bash
-> python -c "import torch; print(torch.cuda.is_available())"
-> ```
-
-### Step 4 — (Optional) Download LoRA Adapter Weights
-
-Pre-trained LoRA adapters for 17th-century Spanish manuscripts:
-
-```bash
-# Download from Hugging Face Hub (placeholder — replace with real model ID)
-python -c "
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='your-org/manuscript-lora-v1', local_dir='models/lora_manuscript_v1')
-"
-```
-
----
-
-## Usage
-
-### Run the Streamlit GUI
-
-```bash
-streamlit run ui/app.py
-```
-
-Then open [http://localhost:8501](http://localhost:8501) in your browser.
-
-**Workflow in the UI:**
-1. Select an **Execution Mode** in the sidebar (`Adapter_ReAct` recommended).
-2. Enter the **LoRA Adapter Path** (if using an adapter).
-3. Upload a **PDF manuscript** via the file uploader.
-4. Optionally upload a **Ground Truth `.txt` file** for evaluation.
-5. Click **🚀 Run Pipeline**.
-6. View the transcription in the right column and expand the
-   **🧠 Agentic Trace / Logs** panel to inspect the model's reasoning process.
-
----
-
-### Run Evaluation via Command Line
-
-```bash
-# Evaluate a single PDF against ground truth
-python -m src.evaluation.run_eval \
-    --pdf       data/raw_pdfs/manuscript_1640.pdf \
-    --gt        data/ground_truth/manuscript_1640_gt.txt \
-    --mode      Adapter_ReAct \
-    --adapter   models/lora_manuscript_v1 \
-    --output    results/
-```
-
-> **Note:** `src/evaluation/run_eval.py` is a planned script. Implement it as an
-> argparse entry-point that chains `PDFHandler → AgenticOrchestrator → Evaluator`.
-
----
-
-### Run the Test Suite
-
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage report
-pytest tests/ -v --cov=src --cov-report=html
-
-# Run only implemented tests (skip tests marked as pending)
-pytest tests/ -v -k "not skip"
-```
-
-Expected output (with stubs not yet implemented):
+The pipeline runs **7 sequential model calls per page** across 3 fixed iterations:
 
 ```
-PASSED tests/test_pipeline.py::TestMemoryReflection::test_initial_state_is_empty
-PASSED tests/test_pipeline.py::TestMemoryReflection::test_record_iteration_appends_to_all_lists
-PASSED tests/test_pipeline.py::TestMemoryReflection::test_memory_prevents_identical_sequential_outputs
-PASSED tests/test_pipeline.py::TestEvaluationMetrics::test_perfect_match_cer_is_zero   [jiwer required]
-...
+┌──────────────────────────────────────────────────────────────────────┐
+│  [1] Initial Extraction                                              │
+│      VLM(image, prompt) → A₀                                        │
+│      Memory: M₁ = ∅                                                 │
+└─────────────────────────┬────────────────────────────────────────────┘
+                          │  repeat 3×  (i = 1, 2, 3)
+                          ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  [2] Capability Reflection  (vision call)                            │
+│      Rᵢ = Reflect(image, Q, Aᵢ₋₁, Mᵢ)                              │
+│      → diagnoses errors, proposes correction plan P                  │
+│                                                                      │
+│  [3] Capability Filtering   (code — no model call)                   │
+│      Pfeas = { a ∈ P | a is within model capability }               │
+│      → strips infeasible actions (image editing, human review…)      │
+│                                                                      │
+│  [4] Guided Refinement      (vision call)                            │
+│      Aᵢ = Refine(image, Q, Aᵢ₋₁, Pfeas, Mᵢ ∪ {Rᵢ})                │
+│      → produces improved transcription                               │
+│                                                                      │
+│  Memory update: Mᵢ₊₁ = Mᵢ ∪ {Rᵢ}                                   │
+└──────────────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+                     Final answer: A₃
 ```
 
----
+![System Flowchart](Images/System-Flowchart.drawio.png)
 
-## Module Reference
+### Dynamic LoRA Adapter Switching (local backend)
 
-| Module | Location | Responsibility |
-|---|---|---|
-| `PDFHandler` | `src/ingestion/pdf_handler.py` | PDF → page images via PyMuPDF |
-| `PromptRegistry` | `src/prompt_manager/prompt_registry.py` | Load & render `prompts/*.txt` |
-| `ModelExecutor` | `src/model_engine/model_executor.py` | Qwen-VL inference + LoRA adapter lifecycle |
-| `AgenticOrchestrator` | `src/orchestrator/agentic_orchestrator.py` | ReAct loop with Capability + Memory Reflection |
-| `Evaluator` | `src/evaluation/evaluator.py` | CER, WER, confusion matrix, error heatmap |
-| `TraceLogger` | `src/logger/trace_logger.py` | JSONL structured step logging |
-
----
-
-## Execution Modes
-
-| Mode | Adapters | Reflection Loop | Use Case |
-|---|---|---|---|
-| `Base_OneShot` | ❌ | ❌ | Baseline benchmarking |
-| `Base_ReAct` | ❌ | ✅ | Ablation: reflection without domain adaptation |
-| `Adapter_OneShot` | ✅ | ❌ | Ablation: domain adaptation without reflection |
-| `Adapter_ReAct` | ✅ | ✅ | **Full system — recommended for production** |
-
----
-
-## Dynamic LoRA Switching
-
-The most important architectural feature of this codebase is **dynamic adapter
-switching** within a single agentic iteration:
+When using a local fine-tuned model, the adapter toggles within each iteration:
 
 | Step | Adapter | Rationale |
 |---|---|---|
@@ -235,34 +92,193 @@ switching** within a single agentic iteration:
 | `filter_plan` | 🔴 OFF | Base reasoning → capability awareness |
 | `guided_refinement` | 🟢 ON | Domain weights → historically-informed rewrite |
 
-See `AGENT_INSTRUCTIONS.md` §1 for the full specification and code examples.
+---
+
+## Execution Modes
+
+| Mode | Adapter | Reflection Loop | Use Case |
+|---|---|---|---|
+| `Base_OneShot` | ❌ | ❌ | Baseline benchmarking |
+| `Base_ReAct` | ❌ | ✅ | Reflection without domain adaptation |
+| `Adapter_OneShot` | ✅ | ❌ | Domain adaptation without reflection |
+| `Adapter_ReAct` | ✅ | ✅ | Full system — recommended |
+
+---
+
+## Fine-Tuning Experiments
+
+Two genuine fine-tuning runs were conducted on `Qwen3.5-0.8B` using LoRA adapters. These runs are documented here as first-class experimental findings, not as failed attempts to be hidden.
+
+### Run 1 — Printed Historical Spanish Text
+
+| | |
+|---|---|
+| Training data | ~2,200 image-transcription pairs |
+| Epochs | 5 |
+| Result | CER: 8% → 9% (marginal change) |
+| Finding | The base VLM's zero-shot capability on printed text is already near saturation at this data volume. Printed text is regular and predictable enough that a general-purpose VLM handles it well without domain adaptation. |
+
+![Printed Training Dashboard](Images/printed_text_training_dashboard.png)
+
+| Resource | Link |
+|---|---|
+| HuggingFace Dataset | [Ak137/Historical-Spanish-VLM-OCR-Qwen](https://huggingface.co/datasets/Ak137/Historical-Spanish-VLM-OCR-Qwen) |
+| HuggingFace LoRA Adapter | [Ak137/qwen3.5-0.8B-spanish-ocr-lora](https://huggingface.co/Ak137/qwen3.5-0.8B-spanish-ocr-lora) |
+
+---
+
+### Run 2 — Handwritten Historical Spanish Text
+
+| | |
+|---|---|
+| Training data | ~500 image-transcription pairs |
+| Epochs | 5 |
+| Result | CER: 30% → 65% (catastrophic overfitting) |
+| Finding | 500 samples across 5 epochs caused the model to memorize training transcriptions rather than learn generalizable glyph patterns. The training data distribution (modern handwriting datasets) did not match the test distribution (17th-century Spanish archive documents). This result directly motivates the agentic approach: for low-resource historical handwriting scenarios, structured iterative self-correction with a capable base VLM outperforms fine-tuning a small model on a mismatched small dataset. |
+
+![Handwritten Training Dashboard](Images/handwritten_text_training_dashboard.png)
+
+| Resource | Link |
+|---|---|
+| HuggingFace Dataset | [Ak137/Handwritten_Historical_Spanish](https://huggingface.co/datasets/Ak137/Handwritten_Historical_Spanish) |
+| HuggingFace LoRA Adapter | [Ak137/qwen3.5-0.8B-handwritten-spanish-ocr-lora](https://huggingface.co/Ak137/qwen3.5-0.8B-handwritten-spanish-ocr-lora) |
+| Training notebook | `notebooks/finetunning_qwen3.5_spanish_ocr.ipynb` |
+| Additional training data | [PrimaResearch Historical Document Collection](https://www.primaresearch.org/datasets) |
+
+---
+
+## Backend Configuration
+
+The pipeline supports two backends, switchable via `config.yaml` without touching any source code.
+
+```yaml
+# Switch between 'local' and 'openrouter'
+backend: openrouter
+
+openrouter:
+  api_key: ${OPENROUTER_API_KEY}   # set in .env
+  model: google/gemini-2.0-flash-001
+  max_tokens: 4096
+  temperature: 0.1
+
+local:
+  model_path: models/Qwen3.5-0.8B
+  adapter_path: null               # path to LoRA adapter, or null
+  load_in_4bit: true
+```
+
+---
+
+## Installation
+
+### Prerequisites
+
+- Python 3.10+
+- CUDA 12.x with compatible GPU (≥16 GB VRAM recommended for 4-bit local mode)
+- `conda` or `venv`
+
+### Setup
+
+```bash
+git clone [https://github.com/adham137/GSoC26-RenAIssance-OCR]
+cd agentic-ocr-framework
+
+# Create environment
+conda create -n ocr-agent python=3.10 -y
+conda activate ocr-agent
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Copy and fill in your API key
+cp .env.example .env
+# Edit .env: OPENROUTER_API_KEY=your_key_here
+```
+
+---
+
+## Usage
+
+### Streamlit UI
+
+```bash
+streamlit run ui/app.py
+```
+
+Open [http://localhost:8501](http://localhost:8501).
+
+1. Select backend in `config.yaml` (`local` or `openrouter`)
+2. Select **Execution Mode** in sidebar
+3. Upload a **PDF manuscript**
+4. Optionally upload a **Ground Truth `.txt`** for evaluation
+5. Click **🚀 Run Pipeline**
+6. View transcription and expand **🧠 Agentic Trace** to inspect the model's reasoning
+
+### Command Line Evaluation
+
+```bash
+python -m src.evaluation.run_evaluation \
+    --metadata  data/eval_ready/metadata.jsonl \
+    --mode      Base_ReAct \
+    --output    results/
+```
+
+### Tests
+
+```bash
+pytest tests/ -v
+pytest tests/ -v --cov=src --cov-report=html
+```
+
+---
+
+## Evaluation Methodology
+
+All CER/WER scores are computed after the following normalisation pipeline, which mirrors the training normalisation to ensure fair comparison:
+
+1. Unicode ligature expansion (`ﬁ` → `fi`, `ﬂ` → `fl`, etc.)
+2. Lowercase
+3. Accent stripping preserving `ñ` (NFD decomposition, drop Mn-category marks, NFC recomposition)
+4. Unicode-aware punctuation removal (`[^\w\s]` with `re.UNICODE`)
+5. Whitespace collapse
+
+| Metric | Implementation | Notes |
+|---|---|---|
+| CER | `jiwer.cer()` | Character Error Rate |
+| WER | `jiwer.wer()` | Word Error Rate |
+| Confusion Matrix | `Levenshtein.editops()` | Character substitution map |
+| Char-level diff | `difflib` + HTML | Visual error overlay in UI |
+
+---
+
+## Module Reference
+
+| Module | Location | Responsibility |
+|---|---|---|
+| `PDFHandler` | `src/ingestion/pdf_handler.py` | PDF → page images via PyMuPDF |
+| `BaseModelBackend` | `src/model_engine/base_backend.py` | Abstract interface for all backends |
+| `LocalModelBackend` | `src/model_engine/local_backend.py` | Wraps ModelExecutor for local inference |
+| `OpenRouterBackend` | `src/model_engine/openrouter_backend.py` | API backend with retry + image compression |
+| `BackendFactory` | `src/model_engine/backend_factory.py` | Reads config.yaml, returns correct backend |
+| `PromptRegistry` | `src/prompt_manager/prompt_registry.py` | Loads and renders `prompts/*.txt` templates |
+| `AgenticOrchestrator` | `src/orchestrator/agentic_orchestrator.py` | ReAct loop: Capability + Memory Reflection |
+| `Evaluator` | `src/evaluation/evaluator.py` | CER, WER, confusion matrix, diff HTML |
+| `LexicalProcessor` | `src/postprocessing/lexical_processor.py` | Post-processing: watermark removal, non-Latin scrubbing, deduplication |
+| `TraceLogger` | `src/logger/trace_logger.py` | JSONL structured step logging |
 
 ---
 
 ## Prompt Templates
 
-All prompts are stored in `prompts/` as plain `.txt` files — **no prompt text
-appears in Python source**. Templates use `{variable_name}` placeholders that are
-injected at runtime by `PromptRegistry.render()`.
+All prompts are plain `.txt` files in `prompts/`. No prompt text appears in Python source. Variables use `{variable_name}` syntax, injected at runtime by `PromptRegistry.render()`.
 
-| File | Purpose |
-|---|---|
-| `initial_extraction.txt` | Zero-shot first-pass transcription |
-| `capability_reflection.txt` | Error diagnosis + correction planning |
-| `capability_filter.txt` | Remove infeasible actions from plan |
-| `memory_reflection.txt` | Cross-reference plan against history |
-| `guided_refinement.txt` | Execute the plan to produce refined text |
-
----
-
-## Evaluation Metrics
-
-| Metric | Implementation | Description |
+| File | Stage | Notes |
 |---|---|---|
-| CER | `jiwer.cer()` | Character Error Rate |
-| WER | `jiwer.wer()` | Word Error Rate |
-| Confusion Matrix | `Levenshtein.editops()` | Character substitution frequency map |
-| Error Heatmap | PIL + difflib | Visual overlay on manuscript image |
+| `initial_extraction.txt` | Step 0 | Zero-shot first-pass; explicit exclusions for watermarks/archive stamps; `[?]` convention for illegible text |
+| `capability_reflection.txt` | Iter: Sub-step 1 | Error diagnosis + correction plan generation |
+| `capability_filter.txt` | Iter: Sub-step 2 | Strips infeasible actions from plan |
+| `memory_reflection.txt` | Iter: Sub-step 1 | Integrates full reflection history |
+| `guided_refinement.txt` | Iter: Sub-step 3 | Executes filtered plan → produces Aᵢ |
 
 ---
 
@@ -271,35 +287,37 @@ injected at runtime by `PromptRegistry.render()`.
 ```
 agentic_ocr_framework/
 ├── src/
-│   ├── models.py                   ← Pydantic data entities
-│   ├── ingestion/pdf_handler.py    ← PDF ingest & rasterisation
-│   ├── prompt_manager/             ← Template loading & versioning
-│   ├── model_engine/               ← Qwen-VL + LoRA management
-│   ├── orchestrator/               ← ReAct loop implementation
-│   ├── evaluation/                 ← Metrics & visualisation
-│   └── logger/                     ← Structured trace logging
-├── tests/test_pipeline.py          ← Full pytest suite
-├── ui/app.py                       ← Streamlit GUI
-├── prompts/                        ← All prompt templates (.txt)
+│   ├── models.py                        ← Pydantic data entities
+│   ├── ingestion/pdf_handler.py         ← PDF ingest & rasterisation
+│   ├── prompt_manager/                  ← Template loading & versioning
+│   ├── model_engine/
+│   │   ├── base_backend.py              ← Abstract backend interface
+│   │   ├── local_backend.py             ← Local VLM + LoRA wrapper
+│   │   ├── openrouter_backend.py        ← OpenRouter API backend
+│   │   ├── backend_factory.py           ← Config-driven backend selector
+│   │   └── model_executor.py            ← Qwen-VL inference + LoRA lifecycle
+│   ├── orchestrator/
+│   │   └── agentic_orchestrator.py      ← ReAct loop implementation
+│   ├── evaluation/
+│   │   └── evaluator.py                 ← Metrics & visualisation
+│   ├── postprocessing/
+│   │   └── lexical_processor.py         ← Post-processing pipeline
+│   └── logger/trace_logger.py           ← Structured trace logging
+├── notebooks/
+│   └── finetunning_qwen3.5_spanish_ocr.ipynb
+├── tests/test_pipeline.py
+├── ui/app.py                            ← Streamlit GUI
+├── prompts/                             ← All prompt templates (.txt)
 ├── data/
-│   ├── raw_pdfs/                   ← Input documents
-│   ├── ground_truth/               ← Reference transcriptions
-│   └── output_images/              ← Rasterised pages + heatmaps
-├── logs/                           ← Auto-generated JSONL traces
+│   ├── eval_ready/                      ← Preprocessed images + metadata.jsonl
+│   └── output_images/                   ← Rasterised pages
+├── logs/                                ← Auto-generated JSONL traces
+├── models/                              ← LoRA adapter weights
+├── config.yaml                          ← Backend configuration
+├── .env.example                         ← API key template
 ├── requirements.txt
-├── AGENT_INSTRUCTIONS.md           ← Rules for AI coding agents
-└── README.md                       ← This file
+└── README.md
 ```
-
----
-
-## Contributing / Development
-
-1. All inter-module data uses the Pydantic models in `src/models.py`.
-2. All prompts live in `prompts/` — never hardcode strings in Python.
-3. All new execution modes must follow the adapter-switching rule (see `AGENT_INSTRUCTIONS.md`).
-4. Run `pytest tests/ -v` before submitting a PR; all non-`skip` tests must pass.
-5. Bump the `# version:` comment in any modified prompt file.
 
 ---
 
