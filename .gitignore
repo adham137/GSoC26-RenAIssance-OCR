@@ -5,7 +5,7 @@ __pycache__/
 .env
 
 # ML Weights & Data
-data/
+data/output_images
 *.pt
 *.pth
 *.safetensors
