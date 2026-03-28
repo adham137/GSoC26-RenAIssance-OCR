@@ -21,18 +21,44 @@
 
 ## Results
 
-Evaluated on all 5 handwritten test documents from the HumanAI RenAIssance GSoC 2026 dataset using `Base_ReAct` mode (no fine-tuned adapter), average **CER: 22.19%**.
+### Baseline: Traditional OCR engines on the same 5 documents
+
+To contextualise the pipeline's performance, the same five test documents
+were evaluated using Tesseract (Spanish) and EasyOCR (Spanish).
+Full evaluation notebook: `notebooks/baseline_ocr_comparison.ipynb`
+
+| Document | EasyOCR CER | EasyOCR WER | Tesseract CER | Tesseract WER |
+|---|---|---|---|---|
+| ahpg-gpah au61 2 – 1606 | 44.23% | 93.33% | 65.32% | 109.17% |
+| pt3279 146 342 – 1857 | 62.24% | 97.40% | 63.04% | 95.83% |
+| pleito entre el marqués de viana | 72.05% | 114.03% | 51.73% | 100.90% |
+| es 28079 ahn inquisición1667 | 68.51% | 98.94% | 66.70% | 95.24% |
+| ahpg-gpah 1 1716a 35 – 1744 | 56.98% | 98.94% | 60.21% | 119.58% |
+| **Average** | **60.80%** | **100.53%** | **61.40%** | **104.14%** |
+
+> WER exceeding 100% indicates the engine produces more word-level errors
+> than there are words in the ground truth — a complete failure on this
+> document type.
+
+### Pipeline results: Base_ReAct mode (no fine-tuned adapter)
+
+Evaluated on all 5 handwritten test documents. Average CER: **22.19%** —
+a **38.6 percentage point improvement** over traditional engines,
+with no domain-specific fine-tuning.
 
 | Document | Period | CER | WER |
 |---|---|---|---|
 | ahpg-gpah au61 2 – 1606 | 1606 | **13.58%** | 43.61% |
 | pt3279 146 342 – 1857 | 1857 | **15.82%** | 50.00% |
 | pleito entre el marqués de viana | 17th c. | **22.25%** | 56.56% |
-| es 28079 ahn inquisición1667exp 12 – 1640 | 1640 | **23.59%** | 61.90% |
+| es 28079 ahn inquisición1667 | 1640 | **23.59%** | 61.90% |
 | ahpg-gpah 1 1716a 35 – 1744 | 1744 | **35.69%** | 82.54% |
 | **Average** | | **22.19%** | **58.92%** |
 
-> CER is computed after text normalisation (lowercase, accent stripping preserving ñ, Unicode punctuation removal, ligature expansion). See `src/evaluation/evaluator.py`.
+> CER is computed after normalisation: Unicode ligature expansion,
+> lowercase, accent stripping (preserving ñ), Unicode-aware punctuation
+> removal, whitespace collapse. See `src/evaluation/evaluator.py`.
+```
 
 ---
 
