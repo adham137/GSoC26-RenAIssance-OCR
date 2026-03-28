@@ -58,7 +58,6 @@ with no domain-specific fine-tuning.
 > CER is computed after normalisation: Unicode ligature expansion,
 > lowercase, accent stripping (preserving ñ), Unicode-aware punctuation
 > removal, whitespace collapse. See `src/evaluation/evaluator.py`.
-```
 
 ---
 
